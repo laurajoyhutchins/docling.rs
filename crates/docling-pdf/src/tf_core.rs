@@ -609,14 +609,19 @@ fn docling_match_rows(
     Some(TableGrid {
         rows: grid,
         cells: out_cells,
-        unplaced: unplaced.into_iter().map(|w| crate::assemble::UnplacedTableWord {
-            source_cell_id: w.id,
-            text: w.text,
-            bbox: [
-                (w.bbox[0] / SCALE) as f32, (w.bbox[1] / SCALE) as f32,
-                (w.bbox[2] / SCALE) as f32, (w.bbox[3] / SCALE) as f32,
-            ],
-        }).collect(),
+        unplaced: unplaced
+            .into_iter()
+            .map(|w| crate::assemble::UnplacedTableWord {
+                source_cell_id: w.id,
+                text: w.text,
+                bbox: [
+                    (w.bbox[0] / SCALE) as f32,
+                    (w.bbox[1] / SCALE) as f32,
+                    (w.bbox[2] / SCALE) as f32,
+                    (w.bbox[3] / SCALE) as f32,
+                ],
+            })
+            .collect(),
     })
 }
 
