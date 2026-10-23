@@ -30,7 +30,9 @@ aaaa aaaaaaa aaaaaa aaaaaaaaa aaa aaaaa aAaaaAaAAaaaaaaa AAAAAAAaAaaAa aaaaaaaa 
 
 - 30  | aaaaaa aaaa aaa aaaaaaaaa aaaaaaaa aaaaaa aaaaa aaa aaaaaaaaaa aaa aaaaaaaaa aaaaaaaaaaa:
 
-aaaaaa:  aaaaa aaaaaaaa
+aaaaaa:  aaaaa
+
+aaaaaaaa
 
 0
 
@@ -42,7 +44,9 @@ aaa-aa-000
 
 aaa-aa-000
 
-ny aaa-aa-000
+ny
+
+aaa-aa-000
 
 4
 

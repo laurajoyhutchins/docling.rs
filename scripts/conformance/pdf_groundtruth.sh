@@ -53,6 +53,27 @@ BIN_ARGS=(--skip-ocr --compact-tables)
 # single-spaced rendering is the more faithful one — counts as a normalized match.
 norm() { sed -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//'; }
 
+# Conformance is a ratchet, not just a headline count: another fixture getting
+# better must never conceal a regression in one that was already exact.
+# Add a name here only *after* an exact-revision conformance run proves it.
+# These names are pinned to the 2026-10-23 v2.51.0 (7a965118) baseline.
+declare -A baseline_strict=(
+  [picture_classification]=1
+  [multi_page]=1
+  [2305.03393v1-pg9]=1
+  [right_to_left_01]=1
+  [right_to_left_02]=1
+  [base14_fonts_rot90]=1
+  [base14_fonts_rot180]=1
+  [base14_fonts_rot270]=1
+  [code_and_formula]=1
+  [right_to_left_03]=1
+)
+# Upstream's extra space in the AMT fractions should not become a parser bug.
+declare -A baseline_whitespace=([amt_handbook_sample]=1)
+declare -A seen_fixtures=()
+regressions=()
+
 exact=0
 nmatch=0
 total=0
@@ -68,6 +89,13 @@ for gt in tests/data/pdf/groundtruth/*.md; do
   d="$(diff <(printf '%s' "$out") <(printf '%s' "$(cat "$gt")") | grep -cE '^[<>]' || true)"
   # Whitespace-normalized comparison.
   dn="$(diff <(printf '%s' "$out" | norm) <(printf '%s' "$(cat "$gt")" | norm) | grep -cE '^[<>]' || true)"
+  seen_fixtures["$stem"]=1
+  if [[ -n "${baseline_strict[$stem]:-}" && "$d" -ne 0 ]]; then
+    regressions+=("$stem: lost byte-for-byte conformance ($d changed lines)")
+  fi
+  if [[ -n "${baseline_whitespace[$stem]:-}" && "$dn" -ne 0 ]]; then
+    regressions+=("$stem: lost whitespace-normalized conformance ($dn changed lines)")
+  fi
   if [[ "$d" -eq 0 ]]; then
     exact=$((exact + 1))
     nmatch=$((nmatch + 1))
@@ -83,3 +111,15 @@ done
 echo
 echo "Fully conformant (strict):     $exact / $total"
 echo "Whitespace-normalized matches: $nmatch / $total"
+# A fixture removed or renamed must not silently remove its protection.
+for stem in "${!baseline_strict[@]}" "${!baseline_whitespace[@]}"; do
+  if [[ -z "${seen_fixtures[$stem]:-}" ]]; then
+    regressions+=("$stem: pinned fixture source/groundtruth was not measured")
+  fi
+done
+if (( ${#regressions[@]} )); then
+  printf '\nPDF conformance baseline REGRESSED:\n' >&2
+  printf '  - %s\n' "${regressions[@]}" >&2
+  exit 1
+fi
+echo "PDF conformance baseline: no regressions"
