@@ -67,6 +67,20 @@ below). (The two Korean image-only pages `skipped_1page` /
 | table_mislabeled_as_picture | 85 | the survey over-detected as tables; docling keeps a cell's leading indentation (`\|   They work in parallel…`) |
 | redp5110_sampled | 152 | TOC: docling's cell matching puts the dot leaders into the page-number column (`. . . . . . . vii`), ours keeps them with the title (`. vii`); cover-page ordering |
 
+**Source-fidelity distinction.** The [original IBM Redpaper](https://www.redbooks.ibm.com/redpapers/pdfs/redp5110.pdf)
+shows dotted leaders across each TOC row, ending at a printed page label.
+Moving the leaders across the table-column boundary to match another parser's
+Markdown does not recover missing text. A separate, genuine gap is the IBM
+Highlights text, where opaque `/gNNN` glyph names appear instead of readable
+letters. Their numbers must not be shifted to ASCII or decoded through an
+unrelated built-in encoding: PDF `/Differences` selects the actual glyph,
+so recovery needs a verified Unicode cmap, meaningful selected glyph name,
+or outline identity. The renderer already implements glyph selection in
+`render/font/`; any mapping improvement should reuse it and preserve the
+ONNX-free text-layer path. PR #4 tested and rejected an incorrect encoding
+precedence and was **closed without merging**.
+
+
 Measured on the current tree with `scripts/conformance/pdf_groundtruth.sh`
 (`--skip-ocr --compact-tables`, docling-parse renderer). Two ports landed with
 this refresh because the new groundtruth surfaced them: docling's

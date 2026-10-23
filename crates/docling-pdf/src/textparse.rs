@@ -2816,6 +2816,30 @@ mod glyph_names {
         assert_eq!(super::glyph_name_to_char(b"a_b"), None);
     }
 
+    /// PDF /Differences chooses the glyph; an embedded Type 1 font's
+    /// builtin encoding is *not* allowed to override that choice. Without
+    /// ToUnicode or selected-glyph evidence, a synthetic name stays opaque.
+    #[test]
+    fn pdf_differences_override_embedded_type1_encoding() {
+        use std::collections::HashMap;
+        let mut font = super::Font {
+            two_byte: false,
+            to_unicode: HashMap::new(),
+            widths: HashMap::new(),
+            default_width: 500.0,
+            simple_encoding: Some(HashMap::from([(40u8, '(')])),
+            fallback_names: HashMap::from([(40u8, "g40".to_string())]),
+            program_encoding: HashMap::from([(40u8, 'E')]),
+            ascent: 750.0,
+            descent: -250.0,
+            hash: 0,
+            style: Default::default(),
+        };
+        assert_eq!(font.decode_code(40).0.as_deref(), Some("/g40"));
+        font.to_unicode.insert(40, "あ".into());
+        assert_eq!(font.decode_code(40).0.as_deref(), Some("あ"));
+    }
+
     /// The stale-CMap case: ToUnicode maps a code to its own identity while
     /// `/Differences` names a ligature there — the name wins; a CMap that
     /// maps the code anywhere else, or a code with no entry, is untouched.
