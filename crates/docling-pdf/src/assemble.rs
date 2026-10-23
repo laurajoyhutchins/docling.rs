@@ -1244,7 +1244,8 @@ fn attach_heading_suffix_numbers(
                 continue;
             }
             let number = texts[j].trim();
-            if number.is_empty() || number.len() > 2 || !number.bytes().all(|c| c.is_ascii_digit()) {
+            if number.is_empty() || number.len() > 2 || !number.bytes().all(|c| c.is_ascii_digit())
+            {
                 continue;
             }
             // A small number at the top/bottom margin is a page number,
@@ -3759,7 +3760,10 @@ fn group_container_nodes(
     starts: &[usize],
     nodes: &mut Vec<Node>,
 ) {
-    if !regions.iter().any(|r| matches!(r.label, "form" | "key_value_region")) {
+    if !regions
+        .iter()
+        .any(|r| matches!(r.label, "form" | "key_value_region"))
+    {
         return;
     }
     debug_assert_eq!(parents.len(), regions.len());
@@ -5349,7 +5353,12 @@ mod tests {
     #[test]
     fn numbered_heading_suffix_only_attaches_neighbouring_nonmargin_number() {
         let reg = |label, l, t, r, b| Region {
-            label, score: 0.95, l, t, r, b,
+            label,
+            score: 0.95,
+            l,
+            t,
+            r,
+            b,
         };
         let regions = vec![
             reg("section_header", 50.0, 260.0, 110.0, 277.0),
@@ -5360,8 +5369,12 @@ mod tests {
             reg("text", 116.0, 27.0, 123.0, 42.0), // page margin number
         ];
         let mut texts = vec![
-            "Introduction".into(), "1".into(), "25".into(), "2".into(),
-            "Contents".into(), "3".into(),
+            "Introduction".into(),
+            "1".into(),
+            "25".into(),
+            "2".into(),
+            "Contents".into(),
+            "3".into(),
         ];
         let mut consumed = vec![false; regions.len()];
         super::attach_heading_suffix_numbers(&regions, &mut texts, &mut consumed, 800.0);
@@ -5413,12 +5426,23 @@ mod tests {
             caption_location: None,
         };
         let mut nodes = vec![
-            Node::PageInfo { page_no: 0, width: 200.0, height: 300.0 },
-            Node::Paragraph { text: "outside".into() },
-            Node::Heading { level: 2, text: "Inside".into() },
+            Node::PageInfo {
+                page_no: 0,
+                width: 200.0,
+                height: 300.0,
+            },
+            Node::Paragraph {
+                text: "outside".into(),
+            },
+            Node::Heading {
+                level: 2,
+                text: "Inside".into(),
+            },
             table,
             picture,
-            Node::Paragraph { text: "after".into() },
+            Node::Paragraph {
+                text: "after".into(),
+            },
         ];
         let mut before = DoclingDocument::new("form-test");
         before.nodes = nodes.clone();
@@ -5431,12 +5455,18 @@ mod tests {
         super::group_container_nodes(&regions, &parents, &offsets, &mut nodes);
         assert_eq!(nodes.len(), 5);
         match &nodes[2] {
-            Node::Group { label, name, children, .. } => {
+            Node::Group {
+                label,
+                name,
+                children,
+                ..
+            } => {
                 assert_eq!(label, "form_area");
                 assert_eq!(name.as_deref(), Some("group"));
-                assert!(matches!(children.as_slice(), [
-                    Node::Heading { .. }, Node::Table(_), Node::Picture { .. }
-                ]));
+                assert!(matches!(
+                    children.as_slice(),
+                    [Node::Heading { .. }, Node::Table(_), Node::Picture { .. }]
+                ));
             }
             other => panic!("expected form group, got {other:?}"),
         }
