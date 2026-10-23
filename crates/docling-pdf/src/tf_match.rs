@@ -566,16 +566,20 @@ fn pick_orphan_cells(
             }],
         );
     }
+    // Do not infer a TableFormer row or column from a nearby band. The
+    // model-backed grid must only contain assignments supported by both
+    // observed coordinates. Words with incomplete ownership remain available
+    // through match_and_post_process_with_unplaced and keep their source bbox.
     (matches, table_cells, max_cell_id)
 }
 
 /// `MatchingPostProcessor.process` with docling's defaults
 /// (`correct_overlapping_cells=False`): returns the post-processed table
 /// cells and the final one-cell-per-word matches.
-pub fn match_and_post_process(
+pub fn match_and_post_process_with_unplaced(
     table_cells: Vec<TfCell>,
     pdf_cells: &[PdfWord],
-) -> (Vec<TfCell>, Matches) {
+) -> (Vec<TfCell>, Matches, Vec<PdfWord>) {
     let matches = intersection_over_pdf_match(&table_cells, pdf_cells);
 
     let (tab_columns, tab_rows, max_cell_id) = get_table_dimension(&table_cells);
@@ -623,5 +627,99 @@ pub fn match_and_post_process(
         pdf_cells,
         final_matches,
     );
-    (cells_wo, final_matches)
+    let unplaced: Vec<PdfWord> = pdf_cells
+        .iter()
+        .filter(|w| !w.text.trim().is_empty() && !final_matches.contains_key(&w.id))
+        .cloned()
+        .collect();
+    (cells_wo, final_matches, unplaced)
+}
+
+/// Retain the two-output API for callers that explicitly want only the
+/// supported cell assignments (not the independent unplaced source words).
+pub fn match_and_post_process(
+    table_cells: Vec<TfCell>,
+    pdf_cells: &[PdfWord],
+) -> (Vec<TfCell>, Matches) {
+    let (cells, matches, _) = match_and_post_process_with_unplaced(table_cells, pdf_cells);
+    (cells, matches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(id: usize, column: usize, x: f64) -> TfCell {
+        TfCell {
+            bbox: [x, 10.0, x + 60.0, 30.0],
+            cell_id: id,
+            row_id: 0,
+            column_id: column,
+            cell_class: 2,
+            colspan_val: 0,
+            rowspan_val: 0,
+        }
+    }
+
+    fn word(id: usize, text: &str, x: f64, y: f64) -> PdfWord {
+        PdfWord {
+            id,
+            bbox: [x, y, x + 8.0, y + 8.0],
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn words_outside_a_row_or_column_are_not_forced_into_the_grid() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let words = [
+            word(1, "inside", 20.0, 15.0),
+            word(2, "right of columns", 300.0, 15.0),
+            word(3, "below rows", 130.0, 90.0),
+            word(4, "outside both", 300.0, 90.0),
+        ];
+        let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
+        assert_eq!(matches.len(), 1, "grid owns only a two-axis match");
+        assert!(matches.contains_key(&1));
+        for id in [2, 3, 4] {
+            assert!(!matches.contains_key(&id), "unsupported cell ownership");
+        }
+        assert_eq!(cells.len(), 2, "no inferred grid cells");
+        assert!(matches[&1][0].score >= 0.0);
+    }
+
+    #[test]
+    fn orphan_without_any_geometric_anchor_remains_explicitly_unrecoverable() {
+        let words = [word(1, "unknown location", 400.0, 100.0)];
+        let (matches, cells, _) = pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new());
+        assert!(matches.is_empty(), "do not invent a table grid");
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn existing_assignment_is_never_replaced_by_recovery() {
+        let original = MatchEntry {
+            table_cell_id: 0,
+            score: 0.95,
+        };
+        let matches = Matches::from([(5, vec![original.clone()])]);
+        let words = [word(5, "assigned", 400.0, 100.0)];
+        let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
+        assert_eq!(result[&5], vec![original]);
+    }
+
+    #[test]
+    fn unmatched_words_retain_source_identity_and_geometry() {
+        let cells = vec![cell(0, 0, 10.0)];
+        let words = [
+            word(3, "supported", 20.0, 15.0),
+            word(7, "outside both axes", 310.0, 190.0),
+        ];
+        let (_, assignments, unplaced) = match_and_post_process_with_unplaced(cells, &words);
+        assert!(assignments.contains_key(&3));
+        assert_eq!(unplaced.len(), 1);
+        assert_eq!(unplaced[0].id, 7);
+        assert_eq!(unplaced[0].text, "outside both axes");
+        assert_eq!(unplaced[0].bbox, words[1].bbox);
+    }
 }
