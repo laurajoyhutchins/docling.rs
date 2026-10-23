@@ -2834,10 +2834,7 @@ mod glyph_names {
             widths: HashMap::new(),
             default_width: 500.0,
             simple_encoding: Some(HashMap::from([(40u8, '(')])),
-            fallback_names: HashMap::from([
-                (40u8, "g40".to_string()),
-                (41u8, "g41".to_string()),
-            ]),
+            fallback_names: HashMap::from([(40u8, "g40".to_string()), (41u8, "g41".to_string())]),
             program_encoding: HashMap::from([(40u8, 'E')]),
             ascent: 750.0,
             descent: -250.0,
