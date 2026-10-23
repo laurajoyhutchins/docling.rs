@@ -113,9 +113,15 @@ impl Font {
             return (Some(decompose_ligatures(s)), w);
         }
         if !self.two_byte {
-            // A GID-style `/Differences` name (no Unicode) overrides the base
-            // encoding, matching docling's verbatim `/g115` fallback.
+            // A synthetic /Differences name (g40, cid42, ...) has no
+            // Unicode semantics. If the embedded Type 1 program explicitly
+            // names this code with a real glyph, that mapping is stronger
+            // evidence than an opaque placeholder. Never guess from the
+            // placeholder number, and never override ToUnicode above.
             if let Some(name) = self.fallback_names.get(&(code as u8)) {
+                if let Some(&ch) = self.program_encoding.get(&(code as u8)) {
+                    return (Some(decompose_ligatures(&ch.to_string())), w);
+                }
                 return (Some(format!("/{name}")), w);
             }
             if let Some(enc) = &self.simple_encoding {
@@ -2814,6 +2820,34 @@ mod glyph_names {
         assert_eq!(super::glyph_name_to_char(b"f_f_i"), Some('\u{FB03}'));
         assert_eq!(super::glyph_name_to_char(b"f_l"), Some('\u{FB02}'));
         assert_eq!(super::glyph_name_to_char(b"a_b"), None);
+    }
+
+    /// Explicit mappings supplied by an embedded Type 1 program are
+    /// authoritative over meaningless /gNNN names. Without that evidence,
+    /// keep the synthetic token instead of inventing text from its digits.
+    #[test]
+    fn embedded_type1_mapping_precedes_synthetic_difference_name() {
+        use std::collections::HashMap;
+        let mut font = super::Font {
+            two_byte: false,
+            to_unicode: HashMap::new(),
+            widths: HashMap::new(),
+            default_width: 500.0,
+            simple_encoding: Some(HashMap::from([(40u8, '(')])),
+            fallback_names: HashMap::from([
+                (40u8, "g40".to_string()),
+                (41u8, "g41".to_string()),
+            ]),
+            program_encoding: HashMap::from([(40u8, 'E')]),
+            ascent: 750.0,
+            descent: -250.0,
+            hash: 0,
+            style: Default::default(),
+        };
+        assert_eq!(font.decode_code(40).0.as_deref(), Some("E"));
+        assert_eq!(font.decode_code(41).0.as_deref(), Some("/g41"));
+        font.to_unicode.insert(40, "あ".into());
+        assert_eq!(font.decode_code(40).0.as_deref(), Some("あ"));
     }
 
     /// The stale-CMap case: ToUnicode maps a code to its own identity while
