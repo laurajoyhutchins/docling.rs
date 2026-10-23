@@ -1137,14 +1137,14 @@ fn order_with_containers<T: Clone>(
     page_w: f32,
     page_h: f32,
     reg: impl Fn(&T) -> &Region,
-) {
+) -> Vec<Option<usize>> {
     let is_container = |r: &Region| matches!(r.label, "form" | "key_value_region");
     let containers: Vec<usize> = (0..items.len())
         .filter(|&i| is_container(reg(&items[i])))
         .collect();
     if containers.is_empty() {
         order_regions(items, cids, page_w, page_h, reg);
-        return;
+        return vec![None; items.len()];
     }
     // Parent container per item (containers never nest in each other here —
     // upstream assigns regulars and tables/pictures only).
@@ -1192,19 +1192,30 @@ fn order_with_containers<T: Clone>(
     let top_cids: Vec<usize> = top.iter().map(|(i, _)| cids[*i]).collect();
     order_regions(&mut top, &top_cids, page_w, page_h, |it| &it.1);
     let mut out: Vec<T> = Vec::with_capacity(items.len());
+    // Keep the *ordered* direct-parent relationship. The assembler needs this
+    // to preserve form/key-value groups in the document tree; geometry alone
+    // cannot safely recover ownership after the ordering pass.
+    let mut ordered_parents: Vec<Option<usize>> = Vec::with_capacity(items.len());
     for (i, _) in top {
         if is_container(reg(&items[i])) {
             let kid_idx: Vec<usize> = (0..items.len()).filter(|&k| parent[k] == Some(i)).collect();
             let mut kids: Vec<T> = kid_idx.iter().map(|&k| items[k].clone()).collect();
             let kid_cids: Vec<usize> = kid_idx.iter().map(|&k| cids[k]).collect();
             order_regions(&mut kids, &kid_cids, page_w, page_h, &reg);
+            let group_index = out.len();
             out.push(items[i].clone());
-            out.extend(kids);
+            ordered_parents.push(None);
+            for kid in kids {
+                out.push(kid);
+                ordered_parents.push(Some(group_index));
+            }
         } else {
             out.push(items[i].clone());
+            ordered_parents.push(None);
         }
     }
     *items = out;
+    ordered_parents
 }
 
 /// Furniture / not-yet-emitted labels.
@@ -3185,12 +3196,22 @@ pub fn assemble_page(
             )
         })
         .collect();
-    order_with_containers(&mut items, &cids, page.width, page.height, |it| &it.0);
+    let parents = order_with_containers(&mut items, &cids, page.width, page.height, |it| &it.0);
     // Float a margin page number to the front of reading order (docling parity:
     // right_to_left_02's bottom `11` is its first item). Stable, so everything
     // else keeps its order; no-op on pages without such a region.
     let page_h = page.height;
-    items.sort_by_key(|(r, _, _, _)| !is_page_number(r, &page.cells, page_h));
+    let mut indexed_items: Vec<(usize, RegionItem)> = items.into_iter().enumerate().collect();
+    indexed_items.sort_by_key(|(_, (r, _, _, _))| !is_page_number(r, &page.cells, page_h));
+    let mut old_to_new = vec![0usize; indexed_items.len()];
+    for (new, (old, _)) in indexed_items.iter().enumerate() {
+        old_to_new[*old] = new;
+    }
+    let ordered_parents: Vec<Option<usize>> = indexed_items
+        .iter()
+        .map(|(old, _)| parents[*old].map(|parent| old_to_new[parent]))
+        .collect();
+    let mut items: Vec<RegionItem> = indexed_items.into_iter().map(|(_, item)| item).collect();
     let table_rows: Vec<Option<TableGrid>> = items.iter().map(|(_, t, _, _)| t.clone()).collect();
     let enrichments: Vec<Option<Enrichment>> = items.iter().map(|(_, _, e, _)| e.clone()).collect();
     let mut picture_children: Vec<Vec<Region>> = items
@@ -3314,7 +3335,11 @@ pub fn assemble_page(
         }
     }
 
+    // Node ranges retain one output slice per region, including empty slices
+    // for consumed captions and structural containers.
+    let mut node_starts = vec![0usize; regions.len() + 1];
     for (i, region) in regions.iter().enumerate() {
+        node_starts[i] = nodes.len();
         if consumed[i] {
             continue;
         }
@@ -3655,6 +3680,8 @@ pub fn assemble_page(
             }
         }
     }
+    node_starts[regions.len()] = nodes.len();
+    group_container_nodes(&regions, &ordered_parents, &node_starts, &mut nodes);
     // A `/Rotate`-normalized scanned page (see `pdfium_backend`) was assembled
     // in upright space; rotate the finished geometry back so locations and the
     // page size are display-space, like docling and every viewer report them.
@@ -3662,6 +3689,56 @@ pub fn assemble_page(
         rotate_nodes_to_display(&mut nodes, page.rotation);
     }
     (nodes, links)
+}
+
+/// Rebuild the page's form and key/value wrapper regions as document groups.
+/// Unlike a flat reading order, this preserves parent ownership in JSON and
+/// structured consumers. Markdown renders groups transparently, so the source
+/// text and its order do not change. The offsets include emitted captions,
+/// tables and pictures, not just direct text children.
+fn group_container_nodes(
+    regions: &[Region],
+    parents: &[Option<usize>],
+    starts: &[usize],
+    nodes: &mut Vec<Node>,
+) {
+    if !regions.iter().any(|r| matches!(r.label, "form" | "key_value_region")) {
+        return;
+    }
+    debug_assert_eq!(parents.len(), regions.len());
+    debug_assert_eq!(starts.len(), regions.len() + 1);
+    let mut prefix = std::mem::take(nodes);
+    let mut remaining = prefix.split_off(starts[0]);
+    let mut chunks: Vec<Vec<Node>> = Vec::with_capacity(regions.len());
+    for i in 0..regions.len() {
+        chunks.push(remaining.drain(..(starts[i + 1] - starts[i])).collect());
+    }
+    for (i, region) in regions.iter().enumerate() {
+        if parents[i].is_some() {
+            continue;
+        }
+        let label = match region.label {
+            "form" => "form_area",
+            "key_value_region" => "key_value_area",
+            _ => {
+                prefix.append(&mut chunks[i]);
+                continue;
+            }
+        };
+        let mut children = std::mem::take(&mut chunks[i]);
+        for (j, parent) in parents.iter().enumerate() {
+            if *parent == Some(i) {
+                children.append(&mut chunks[j]);
+            }
+        }
+        prefix.push(Node::Group {
+            label: label.into(),
+            name: Some("group".into()),
+            layer: None,
+            children,
+        });
+    }
+    *nodes = prefix;
 }
 
 /// One child of a picture as docling's `ReadingOrderModel._add_child_elements`
