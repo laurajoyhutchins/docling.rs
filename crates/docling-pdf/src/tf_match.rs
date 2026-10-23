@@ -571,8 +571,12 @@ fn pick_orphan_cells(
     // preserve the PDF word separately rather than fabricating table cells.
     let anchors: Vec<TfCell> = table_cells
         .iter()
-        .filter(|c| c.cell_class > 1 && c.bbox.iter().all(|v| v.is_finite())
-            && c.bbox[0] <= c.bbox[2] && c.bbox[1] <= c.bbox[3])
+        .filter(|c| {
+            c.cell_class > 1
+                && c.bbox.iter().all(|v| v.is_finite())
+                && c.bbox[0] <= c.bbox[2]
+                && c.bbox[1] <= c.bbox[3]
+        })
         .cloned()
         .collect();
     let nearest_band = |axis: usize, coord: f64, row: bool| -> Option<usize> {
@@ -580,31 +584,39 @@ fn pick_orphan_cells(
         let mut bands: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
         for c in &anchors {
             let id = if row { c.row_id } else { c.column_id };
-            let bounds = bands.entry(id).or_insert((f64::INFINITY, f64::NEG_INFINITY));
+            let bounds = bands
+                .entry(id)
+                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
             bounds.0 = bounds.0.min(c.bbox[lo]);
             bounds.1 = bounds.1.max(c.bbox[hi]);
         }
-        bands.into_iter()
+        bands
+            .into_iter()
             .map(|(id, (min, max))| (id, (min - coord).max(0.0).max(coord - max)))
             .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
             .map(|(id, _)| id)
     };
     for word in pdf_cells {
-        if matches.contains_key(&word.id) || word.text.trim().is_empty()
+        if matches.contains_key(&word.id)
+            || word.text.trim().is_empty()
             || !word.bbox.iter().all(|v| v.is_finite())
-            || word.bbox[0] >= word.bbox[2] || word.bbox[1] >= word.bbox[3]
+            || word.bbox[0] >= word.bbox[2]
+            || word.bbox[1] >= word.bbox[3]
         {
             continue;
         }
         let owner = match (row_of.get(&word.id), col_of.get(&word.id)) {
-            (Some(&row), None) => nearest_band(0, (word.bbox[0] + word.bbox[2]) / 2.0, false)
-                .map(|col| (row, col)),
-            (None, Some(&(col, _, _))) => nearest_band(1, (word.bbox[1] + word.bbox[3]) / 2.0, true)
-                .map(|row| (row, col)),
+            (Some(&row), None) => {
+                nearest_band(0, (word.bbox[0] + word.bbox[2]) / 2.0, false).map(|col| (row, col))
+            }
+            (None, Some(&(col, _, _))) => {
+                nearest_band(1, (word.bbox[1] + word.bbox[3]) / 2.0, true).map(|row| (row, col))
+            }
             _ => None,
         };
         let Some((row, col)) = owner else { continue };
-        let table_cell_id = if let Some(cell) = table_cells.iter_mut()
+        let table_cell_id = if let Some(cell) = table_cells
+            .iter_mut()
             .find(|c| c.row_id == row && c.column_id == col)
         {
             cell.bbox = merge_two_bboxes(&cell.bbox, &word.bbox);
@@ -612,17 +624,24 @@ fn pick_orphan_cells(
         } else {
             max_cell_id += 1;
             table_cells.push(TfCell {
-                bbox: word.bbox, cell_id: max_cell_id,
-                row_id: row, column_id: col, cell_class: 2,
-                colspan_val: 0, rowspan_val: 0,
+                bbox: word.bbox,
+                cell_id: max_cell_id,
+                row_id: row,
+                column_id: col,
+                cell_class: 2,
+                colspan_val: 0,
+                rowspan_val: 0,
             });
             max_cell_id
         };
-        matches.insert(word.id, vec![MatchEntry {
-            table_cell_id,
-            // Negative: inferred coordinate, not a direct match.
-            score: -1.0,
-        }]);
+        matches.insert(
+            word.id,
+            vec![MatchEntry {
+                table_cell_id,
+                // Negative: inferred coordinate, not a direct match.
+                score: -1.0,
+            }],
+        );
     }
     (matches, table_cells, max_cell_id)
 }
@@ -681,7 +700,8 @@ pub fn match_and_post_process_with_unplaced(
         pdf_cells,
         final_matches,
     );
-    let unplaced: Vec<PdfWord> = pdf_cells.iter()
+    let unplaced: Vec<PdfWord> = pdf_cells
+        .iter()
         .filter(|w| !w.text.trim().is_empty() && !final_matches.contains_key(&w.id))
         .cloned()
         .collect();
@@ -690,7 +710,10 @@ pub fn match_and_post_process_with_unplaced(
 
 /// Retain the two-output API for callers that explicitly want only the
 /// supported cell assignments (not the independent unplaced source words).
-pub fn match_and_post_process(table_cells: Vec<TfCell>, pdf_cells: &[PdfWord]) -> (Vec<TfCell>, Matches) {
+pub fn match_and_post_process(
+    table_cells: Vec<TfCell>,
+    pdf_cells: &[PdfWord],
+) -> (Vec<TfCell>, Matches) {
     let (cells, matches, _) = match_and_post_process_with_unplaced(table_cells, pdf_cells);
     (cells, matches)
 }
@@ -729,7 +752,11 @@ mod tests {
             word(4, "outside both", 300.0, 90.0),
         ];
         let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
-        assert_eq!(matches.len(), 3, "no supported band means no grid assignment");
+        assert_eq!(
+            matches.len(),
+            3,
+            "no supported band means no grid assignment"
+        );
         assert!(!matches.contains_key(&4));
         assert!(
             matches[&1][0].score >= 0.0,
