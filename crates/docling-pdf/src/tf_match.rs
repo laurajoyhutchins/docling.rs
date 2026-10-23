@@ -590,7 +590,9 @@ fn pick_orphan_cells(
         let mut bands: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
         for cell in &anchors {
             let id = if row { cell.row_id } else { cell.column_id };
-            let bounds = bands.entry(id).or_insert((f64::INFINITY, f64::NEG_INFINITY));
+            let bounds = bands
+                .entry(id)
+                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
             bounds.0 = bounds.0.min(cell.bbox[lo]);
             bounds.1 = bounds.1.max(cell.bbox[hi]);
         }
@@ -763,7 +765,10 @@ mod tests {
         ];
         let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
         assert_eq!(matches.len(), words.len(), "no table-owned word may vanish");
-        assert!(matches[&1][0].score >= 0.0, "normal band match is unchanged");
+        assert!(
+            matches[&1][0].score >= 0.0,
+            "normal band match is unchanged"
+        );
         for id in [2, 3, 4] {
             assert!(matches[&id][0].score < 0.0, "fallback is observable");
         }
@@ -791,14 +796,7 @@ mod tests {
         };
         let matches = Matches::from([(5, vec![original.clone()])]);
         let words = [word(5, "assigned", 400.0, 100.0)];
-        let (result, _, _) = pick_orphan_cells(
-            1,
-            1,
-            0,
-            vec![cell(0, 0, 10.0)],
-            &words,
-            matches,
-        );
+        let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
         assert_eq!(result[&5], vec![original]);
     }
 }
