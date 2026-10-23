@@ -566,6 +566,108 @@ fn pick_orphan_cells(
             }],
         );
     }
+    // The row/column band scan can leave valid page words unmatched: an
+    // OCR/text cell can belong to the layout table bbox while lying outside
+    // the much smaller grid predicted by TableFormer. Silently discarding it
+    // loses document content (docling-ibm-models #172). Recover only words
+    // not already matched and only when a real predicted/matched cell gives
+    // us a geometric anchor. This does not change any ordinary band match.
+    //
+    // Use the original cells as band anchors: newly recovered words must not
+    // move the band extents and thereby change subsequent assignments.
+    let anchors: Vec<TfCell> = table_cells
+        .iter()
+        .filter(|cell| {
+            cell.cell_class > 1
+                && cell.bbox.iter().all(|x| x.is_finite())
+                && cell.bbox[0] <= cell.bbox[2]
+                && cell.bbox[1] <= cell.bbox[3]
+        })
+        .cloned()
+        .collect();
+    let nearest_band = |axis: usize, coord: f64, row: bool| -> Option<(usize, f64)> {
+        let (lo, hi) = if axis == 0 { (0, 2) } else { (1, 3) };
+        let mut bands: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
+        for cell in &anchors {
+            let id = if row { cell.row_id } else { cell.column_id };
+            let bounds = bands.entry(id).or_insert((f64::INFINITY, f64::NEG_INFINITY));
+            bounds.0 = bounds.0.min(cell.bbox[lo]);
+            bounds.1 = bounds.1.max(cell.bbox[hi]);
+        }
+        bands
+            .into_iter()
+            .map(|(id, (min, max))| {
+                let distance = if coord < min {
+                    min - coord
+                } else {
+                    (coord - max).max(0.0)
+                };
+                (id, distance)
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+    };
+    let mut recovered = 0usize;
+    let mut unrecoverable = 0usize;
+    for word in pdf_cells {
+        if matches.contains_key(&word.id) {
+            continue;
+        }
+        let [l, t, r, b] = word.bbox;
+        if word.text.trim().is_empty()
+            || !word.bbox.iter().all(|v| v.is_finite())
+            || l >= r
+            || t >= b
+        {
+            unrecoverable += 1;
+            continue;
+        }
+        let Some((row, dy)) = nearest_band(1, (t + b) / 2.0, true) else {
+            unrecoverable += 1;
+            continue;
+        };
+        let Some((col, dx)) = nearest_band(0, (l + r) / 2.0, false) else {
+            unrecoverable += 1;
+            continue;
+        };
+        let existing = table_cells
+            .iter()
+            .position(|cell| cell.row_id == row && cell.column_id == col);
+        let table_cell_id = match existing {
+            Some(i) => {
+                table_cells[i].bbox = merge_two_bboxes(&table_cells[i].bbox, &word.bbox);
+                table_cells[i].cell_id
+            }
+            None => {
+                max_cell_id += 1;
+                table_cells.push(TfCell {
+                    bbox: word.bbox,
+                    cell_id: max_cell_id,
+                    row_id: row,
+                    column_id: col,
+                    cell_class: 2,
+                    colspan_val: 0,
+                    rowspan_val: 0,
+                });
+                max_cell_id
+            }
+        };
+        // Always negative, including an out-of-band word exactly on a band
+        // edge. The caller can distinguish inferred ownership from measured
+        // overlap or regular band placement.
+        matches.insert(
+            word.id,
+            vec![MatchEntry {
+                table_cell_id,
+                score: -1.0 - dy.hypot(dx).round(),
+            }],
+        );
+        recovered += 1;
+    }
+    if recovered > 0 || unrecoverable > 0 {
+        eprintln!(
+            "TableFormer unmatched page words: recovered {recovered}, unrecoverable {unrecoverable}"
+        );
+    }
     (matches, table_cells, max_cell_id)
 }
 
