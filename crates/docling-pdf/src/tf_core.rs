@@ -404,6 +404,7 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
     Some(TableGrid {
         rows: grid,
         cells: out_cells,
+        unplaced: Vec::new(),
     })
 }
 
@@ -506,8 +507,8 @@ fn docling_match_rows(
         dump_match_inputs(&dir, &tf_cells, &scaled_words);
     }
 
-    let (cells_wo, final_matches) =
-        crate::tf_match::match_and_post_process(tf_cells, &scaled_words);
+    let (cells_wo, final_matches, unplaced) =
+        crate::tf_match::match_and_post_process_with_unplaced(tf_cells, &scaled_words);
 
     // `_merge_tf_output`: group per (column, row) in ascending-pdf-id order; the
     // first word's table cell fixes the group's offsets and spans.
@@ -608,6 +609,14 @@ fn docling_match_rows(
     Some(TableGrid {
         rows: grid,
         cells: out_cells,
+        unplaced: unplaced.into_iter().map(|w| crate::assemble::UnplacedTableWord {
+            source_cell_id: w.id,
+            text: w.text,
+            bbox: [
+                (w.bbox[0] / SCALE) as f32, (w.bbox[1] / SCALE) as f32,
+                (w.bbox[2] / SCALE) as f32, (w.bbox[3] / SCALE) as f32,
+            ],
+        }).collect(),
     })
 }
 

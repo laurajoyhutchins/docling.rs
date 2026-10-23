@@ -566,109 +566,63 @@ fn pick_orphan_cells(
             }],
         );
     }
-    // The row/column band scan can leave valid page words unmatched: an
-    // OCR/text cell can belong to the layout table bbox while lying outside
-    // the much smaller grid predicted by TableFormer. Silently discarding it
-    // loses document content (docling-ibm-models #172). Recover only words
-    // not already matched and only when a real predicted/matched cell gives
-    // us a geometric anchor. This does not change any ordinary band match.
-    //
-    // Use the original cells as band anchors: newly recovered words must not
-    // move the band extents and thereby change subsequent assignments.
+    // Only an orphan with one measured grid coordinate can acquire the
+    // other from nearby cell geometry. When both coordinates are unknown,
+    // preserve the PDF word separately rather than fabricating table cells.
     let anchors: Vec<TfCell> = table_cells
         .iter()
-        .filter(|cell| {
-            cell.cell_class > 1
-                && cell.bbox.iter().all(|x| x.is_finite())
-                && cell.bbox[0] <= cell.bbox[2]
-                && cell.bbox[1] <= cell.bbox[3]
-        })
+        .filter(|c| c.cell_class > 1 && c.bbox.iter().all(|v| v.is_finite())
+            && c.bbox[0] <= c.bbox[2] && c.bbox[1] <= c.bbox[3])
         .cloned()
         .collect();
-    let nearest_band = |axis: usize, coord: f64, row: bool| -> Option<(usize, f64)> {
+    let nearest_band = |axis: usize, coord: f64, row: bool| -> Option<usize> {
         let (lo, hi) = if axis == 0 { (0, 2) } else { (1, 3) };
         let mut bands: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
-        for cell in &anchors {
-            let id = if row { cell.row_id } else { cell.column_id };
-            let bounds = bands
-                .entry(id)
-                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
-            bounds.0 = bounds.0.min(cell.bbox[lo]);
-            bounds.1 = bounds.1.max(cell.bbox[hi]);
+        for c in &anchors {
+            let id = if row { c.row_id } else { c.column_id };
+            let bounds = bands.entry(id).or_insert((f64::INFINITY, f64::NEG_INFINITY));
+            bounds.0 = bounds.0.min(c.bbox[lo]);
+            bounds.1 = bounds.1.max(c.bbox[hi]);
         }
-        bands
-            .into_iter()
-            .map(|(id, (min, max))| {
-                let distance = if coord < min {
-                    min - coord
-                } else {
-                    (coord - max).max(0.0)
-                };
-                (id, distance)
-            })
+        bands.into_iter()
+            .map(|(id, (min, max))| (id, (min - coord).max(0.0).max(coord - max)))
             .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+            .map(|(id, _)| id)
     };
-    let mut recovered = 0usize;
-    let mut unrecoverable = 0usize;
     for word in pdf_cells {
-        if matches.contains_key(&word.id) {
-            continue;
-        }
-        let [l, t, r, b] = word.bbox;
-        if word.text.trim().is_empty()
+        if matches.contains_key(&word.id) || word.text.trim().is_empty()
             || !word.bbox.iter().all(|v| v.is_finite())
-            || l >= r
-            || t >= b
+            || word.bbox[0] >= word.bbox[2] || word.bbox[1] >= word.bbox[3]
         {
-            unrecoverable += 1;
             continue;
         }
-        let Some((row, dy)) = nearest_band(1, (t + b) / 2.0, true) else {
-            unrecoverable += 1;
-            continue;
+        let owner = match (row_of.get(&word.id), col_of.get(&word.id)) {
+            (Some(&row), None) => nearest_band(0, (word.bbox[0] + word.bbox[2]) / 2.0, false)
+                .map(|col| (row, col)),
+            (None, Some(&(col, _, _))) => nearest_band(1, (word.bbox[1] + word.bbox[3]) / 2.0, true)
+                .map(|row| (row, col)),
+            _ => None,
         };
-        let Some((col, dx)) = nearest_band(0, (l + r) / 2.0, false) else {
-            unrecoverable += 1;
-            continue;
+        let Some((row, col)) = owner else { continue };
+        let table_cell_id = if let Some(cell) = table_cells.iter_mut()
+            .find(|c| c.row_id == row && c.column_id == col)
+        {
+            cell.bbox = merge_two_bboxes(&cell.bbox, &word.bbox);
+            cell.cell_id
+        } else {
+            max_cell_id += 1;
+            table_cells.push(TfCell {
+                bbox: word.bbox, cell_id: max_cell_id,
+                row_id: row, column_id: col, cell_class: 2,
+                colspan_val: 0, rowspan_val: 0,
+            });
+            max_cell_id
         };
-        let existing = table_cells
-            .iter()
-            .position(|cell| cell.row_id == row && cell.column_id == col);
-        let table_cell_id = match existing {
-            Some(i) => {
-                table_cells[i].bbox = merge_two_bboxes(&table_cells[i].bbox, &word.bbox);
-                table_cells[i].cell_id
-            }
-            None => {
-                max_cell_id += 1;
-                table_cells.push(TfCell {
-                    bbox: word.bbox,
-                    cell_id: max_cell_id,
-                    row_id: row,
-                    column_id: col,
-                    cell_class: 2,
-                    colspan_val: 0,
-                    rowspan_val: 0,
-                });
-                max_cell_id
-            }
-        };
-        // Always negative, including an out-of-band word exactly on a band
-        // edge. The caller can distinguish inferred ownership from measured
-        // overlap or regular band placement.
-        matches.insert(
-            word.id,
-            vec![MatchEntry {
-                table_cell_id,
-                score: -1.0 - dy.hypot(dx).round(),
-            }],
-        );
-        recovered += 1;
-    }
-    if recovered > 0 || unrecoverable > 0 {
-        eprintln!(
-            "TableFormer unmatched page words: recovered {recovered}, unrecoverable {unrecoverable}"
-        );
+        matches.insert(word.id, vec![MatchEntry {
+            table_cell_id,
+            // Negative: inferred coordinate, not a direct match.
+            score: -1.0,
+        }]);
     }
     (matches, table_cells, max_cell_id)
 }
@@ -676,10 +630,10 @@ fn pick_orphan_cells(
 /// `MatchingPostProcessor.process` with docling's defaults
 /// (`correct_overlapping_cells=False`): returns the post-processed table
 /// cells and the final one-cell-per-word matches.
-pub fn match_and_post_process(
+pub fn match_and_post_process_with_unplaced(
     table_cells: Vec<TfCell>,
     pdf_cells: &[PdfWord],
-) -> (Vec<TfCell>, Matches) {
+) -> (Vec<TfCell>, Matches, Vec<PdfWord>) {
     let matches = intersection_over_pdf_match(&table_cells, pdf_cells);
 
     let (tab_columns, tab_rows, max_cell_id) = get_table_dimension(&table_cells);
@@ -727,7 +681,18 @@ pub fn match_and_post_process(
         pdf_cells,
         final_matches,
     );
-    (cells_wo, final_matches)
+    let unplaced: Vec<PdfWord> = pdf_cells.iter()
+        .filter(|w| !w.text.trim().is_empty() && !final_matches.contains_key(&w.id))
+        .cloned()
+        .collect();
+    (cells_wo, final_matches, unplaced)
+}
+
+/// Retain the two-output API for callers that explicitly want only the
+/// supported cell assignments (not the independent unplaced source words).
+pub fn match_and_post_process(table_cells: Vec<TfCell>, pdf_cells: &[PdfWord]) -> (Vec<TfCell>, Matches) {
+    let (cells, matches, _) = match_and_post_process_with_unplaced(table_cells, pdf_cells);
+    (cells, matches)
 }
 
 #[cfg(test)]
@@ -755,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn orphan_recovery_preserves_every_valid_word_with_predicted_anchors() {
+    fn orphan_recovery_requires_one_measured_band() {
         let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
         let words = [
             word(1, "inside", 20.0, 15.0),
@@ -764,15 +729,16 @@ mod tests {
             word(4, "outside both", 300.0, 90.0),
         ];
         let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
-        assert_eq!(matches.len(), words.len(), "no table-owned word may vanish");
+        assert_eq!(matches.len(), 3, "no supported band means no grid assignment");
+        assert!(!matches.contains_key(&4));
         assert!(
             matches[&1][0].score >= 0.0,
             "normal band match is unchanged"
         );
-        for id in [2, 3, 4] {
+        for id in [2, 3] {
             assert!(matches[&id][0].score < 0.0, "fallback is observable");
         }
-        for (id, col) in [(1, 0), (2, 1), (3, 1), (4, 1)] {
+        for (id, col) in [(1, 0), (2, 1), (3, 1)] {
             let owned = matches[&id][0].table_cell_id;
             let assigned = cells.iter().find(|cell| cell.cell_id == owned).unwrap();
             assert_eq!(assigned.column_id, col);
@@ -798,5 +764,20 @@ mod tests {
         let words = [word(5, "assigned", 400.0, 100.0)];
         let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
         assert_eq!(result[&5], vec![original]);
+    }
+
+    #[test]
+    fn unmatched_words_retain_source_identity_and_geometry() {
+        let cells = vec![cell(0, 0, 10.0)];
+        let words = [
+            word(3, "supported", 20.0, 15.0),
+            word(7, "outside both axes", 310.0, 190.0),
+        ];
+        let (_, assignments, unplaced) = match_and_post_process_with_unplaced(cells, &words);
+        assert!(assignments.contains_key(&3));
+        assert_eq!(unplaced.len(), 1);
+        assert_eq!(unplaced[0].id, 7);
+        assert_eq!(unplaced[0].text, "outside both axes");
+        assert_eq!(unplaced[0].bbox, words[1].bbox);
     }
 }
