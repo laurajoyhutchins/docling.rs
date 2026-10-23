@@ -3572,9 +3572,12 @@ pub fn assemble_page(
                         caption_location,
                     }),
                 ));
-                // Neither predicted row nor column owns these source words.
-                // Keep the source text and its coordinates in a separate
-                // group rather than fabricate cells in the TableFormer grid.
+                // Preserve words the source parser read but the predicted
+                // grid cannot place, without inventing TableFormer cells.
+                // The standard invisible content layer keeps these located,
+                // source-ID-addressable observations in JSON and opt-in
+                // all-layer exports, while leaving default Markdown identical
+                // to the interpreted, supported table.
                 if !unplaced.is_empty() {
                     let children = unplaced
                         .into_iter()
@@ -3611,7 +3614,7 @@ pub fn assemble_page(
                     nodes.push(Node::Group {
                         label: "unplaced_table_text".into(),
                         name: Some(format!("table_region_{i}_unplaced_words")),
-                        layer: None,
+                        layer: Some(docling_core::ContentLayer::Invisible),
                         children,
                     });
                 }
