@@ -727,3 +727,78 @@ pub fn match_and_post_process(
     );
     (cells_wo, final_matches)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(id: usize, column: usize, x: f64) -> TfCell {
+        TfCell {
+            bbox: [x, 10.0, x + 60.0, 30.0],
+            cell_id: id,
+            row_id: 0,
+            column_id: column,
+            cell_class: 2,
+            colspan_val: 0,
+            rowspan_val: 0,
+        }
+    }
+
+    fn word(id: usize, text: &str, x: f64, y: f64) -> PdfWord {
+        PdfWord {
+            id,
+            bbox: [x, y, x + 8.0, y + 8.0],
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn orphan_recovery_preserves_every_valid_word_with_predicted_anchors() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let words = [
+            word(1, "inside", 20.0, 15.0),
+            word(2, "right of columns", 300.0, 15.0),
+            word(3, "below rows", 130.0, 90.0),
+            word(4, "outside both", 300.0, 90.0),
+        ];
+        let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
+        assert_eq!(matches.len(), words.len(), "no table-owned word may vanish");
+        assert!(matches[&1][0].score >= 0.0, "normal band match is unchanged");
+        for id in [2, 3, 4] {
+            assert!(matches[&id][0].score < 0.0, "fallback is observable");
+        }
+        for (id, col) in [(1, 0), (2, 1), (3, 1), (4, 1)] {
+            let owned = matches[&id][0].table_cell_id;
+            let assigned = cells.iter().find(|cell| cell.cell_id == owned).unwrap();
+            assert_eq!(assigned.column_id, col);
+            assert_eq!(assigned.row_id, 0);
+        }
+    }
+
+    #[test]
+    fn orphan_without_any_geometric_anchor_remains_explicitly_unrecoverable() {
+        let words = [word(1, "unknown location", 400.0, 100.0)];
+        let (matches, cells, _) = pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new());
+        assert!(matches.is_empty(), "do not invent a table grid");
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn existing_assignment_is_never_replaced_by_recovery() {
+        let original = MatchEntry {
+            table_cell_id: 0,
+            score: 0.95,
+        };
+        let matches = Matches::from([(5, vec![original.clone()])]);
+        let words = [word(5, "assigned", 400.0, 100.0)];
+        let (result, _, _) = pick_orphan_cells(
+            1,
+            1,
+            0,
+            vec![cell(0, 0, 10.0)],
+            &words,
+            matches,
+        );
+        assert_eq!(result[&5], vec![original]);
+    }
+}
