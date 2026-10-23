@@ -94,6 +94,8 @@ struct Font {
     /// used only as a last resort for glyphs the base encoding leaves unmapped
     /// (standard TeX math fonts: `λ`, `≤`, …).
     program_encoding: HashMap<u8, char>,
+    /// Unique Unicode cmap inverse for the selected embedded TrueType glyph.
+    selected_glyph_unicode: HashMap<u8, char>,
     ascent: f64,
     descent: f64,
     hash: u64,
@@ -116,6 +118,12 @@ impl Font {
             // A GID-style `/Differences` name (no Unicode) overrides the base
             // encoding, matching docling's verbatim `/g115` fallback.
             if let Some(name) = self.fallback_names.get(&(code as u8)) {
+                // PDF Differences chooses the glyph; a unique Unicode cmap
+                // inverse of that selected glyph supplies real text without
+                // overriding the PDF encoding or guessing numeric offsets.
+                if let Some(&ch) = self.selected_glyph_unicode.get(&(code as u8)) {
+                    return (Some(decompose_ligatures(&ch.to_string())), w);
+                }
                 return (Some(format!("/{name}")), w);
             }
             if let Some(enc) = &self.simple_encoding {
@@ -306,6 +314,7 @@ fn parse_font(doc: &Document, name: &[u8], fdict: &Dictionary) -> Font {
     } else {
         type1_program_encoding(doc, fdict)
     };
+    let selected_glyph_unicode = embedded_truetype_gid_unicode(doc, fdict, &fallback_names);
 
     let (ascent, descent) = font_ascent_descent(doc, fdict, two_byte);
 
@@ -317,6 +326,7 @@ fn parse_font(doc: &Document, name: &[u8], fdict: &Dictionary) -> Font {
         simple_encoding,
         fallback_names,
         program_encoding,
+        selected_glyph_unicode,
         ascent,
         descent,
         hash: hash_name(&sanitizer_font_name(doc, fdict, two_byte)),
@@ -397,6 +407,107 @@ fn differences_gid_names(doc: &Document, fdict: &Dictionary) -> HashMap<u8, Stri
         }
     }
     map
+}
+
+/// Synthetic numbers designate GIDs only when the selected renderer path
+/// interprets them that way. They are never Unicode codepoint offsets.
+pub(crate) fn synthetic_gid_from_name(name: &str) -> Option<u16> {
+    for prefix in ["glyph", "index", "cid", "g", "G"] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
+                return rest.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// A font can map several Unicode characters to one glyph. An inverse is
+/// authoritative only when all supported Unicode subtables agree.
+fn unique_glyph_unicode<I: IntoIterator<Item = (u16, char)>>(
+    pairs: I,
+) -> HashMap<u16, Option<char>> {
+    let mut map = HashMap::new();
+    for (gid, ch) in pairs {
+        map.entry(gid)
+            .and_modify(|known| {
+                if *known != Some(ch) {
+                    *known = None;
+                }
+            })
+            .or_insert(Some(ch));
+    }
+    map
+}
+
+/// Select the embedded TrueType glyph as the renderer does and recover text
+/// only where its Unicode cmap gives that GID one unambiguous scalar.
+/// A symbolic font may choose a different glyph through its symbol cmap,
+/// so synthetic names are not sufficient evidence there.
+fn embedded_truetype_gid_unicode(
+    doc: &Document,
+    fdict: &Dictionary,
+    names: &HashMap<u8, String>,
+) -> HashMap<u8, char> {
+    let mut recovered = HashMap::new();
+    if names.is_empty()
+        || fdict.get(b"Subtype").ok().and_then(|v| v.as_name().ok())
+            != Some(b"TrueType".as_slice())
+    {
+        return recovered;
+    }
+    let Some(desc) = fdict
+        .get(b"FontDescriptor")
+        .ok()
+        .and_then(|obj| as_dict(doc, obj))
+    else {
+        return recovered;
+    };
+    if desc.get(b"Flags").ok().and_then(|v| v.as_i64().ok()).unwrap_or(0) & 4 != 0 {
+        return recovered;
+    }
+    let Some(bytes) = desc
+        .get(b"FontFile2")
+        .ok()
+        .and_then(|obj| deref(doc, obj))
+        .and_then(|obj| obj.as_stream().ok())
+        .and_then(|stream| stream.decompressed_content().ok())
+    else {
+        return recovered;
+    };
+    let Ok(face) = ttf_parser::Face::parse(&bytes, 0) else {
+        return recovered;
+    };
+    let Some(cmap) = face.tables().cmap.as_ref() else {
+        return recovered;
+    };
+    let mut pairs = Vec::new();
+    for subtable in cmap.subtables {
+        if !subtable.is_unicode() {
+            continue;
+        }
+        subtable.codepoints(|code| {
+            if let (Some(gid), Some(ch)) = (subtable.glyph_index(code), char::from_u32(code)) {
+                if !ch.is_control()
+                    && !matches!(code, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+                {
+                    pairs.push((gid.0, ch));
+                }
+            }
+        });
+    }
+    let by_gid = unique_glyph_unicode(pairs);
+    for (&code, name) in names {
+        let selected = face.glyph_index_by_name(name)
+            .map(|gid| gid.0)
+            .or_else(|| synthetic_gid_from_name(name));
+        if let Some(gid) = selected.filter(|gid| *gid > 0 && *gid < face.number_of_glyphs()) {
+            if let Some(Some(ch)) = by_gid.get(&gid) {
+                recovered.insert(code, *ch);
+            }
+        }
+    }
+    recovered
 }
 
 /// Parse the embedded Type1 font program's built-in `/Encoding` vector
@@ -2830,6 +2941,7 @@ mod glyph_names {
             simple_encoding: Some(HashMap::from([(40u8, '(')])),
             fallback_names: HashMap::from([(40u8, "g40".to_string())]),
             program_encoding: HashMap::from([(40u8, 'E')]),
+            selected_glyph_unicode: HashMap::new(),
             ascent: 750.0,
             descent: -250.0,
             hash: 0,
@@ -2838,6 +2950,20 @@ mod glyph_names {
         assert_eq!(font.decode_code(40).0.as_deref(), Some("/g40"));
         font.to_unicode.insert(40, "あ".into());
         assert_eq!(font.decode_code(40).0.as_deref(), Some("あ"));
+    }
+
+    #[test]
+    fn selected_glyph_unicode_requires_unambiguous_cmap() {
+        assert_eq!(super::synthetic_gid_from_name("g40"), Some(40));
+        assert_eq!(super::synthetic_gid_from_name("index87"), Some(87));
+        assert_eq!(super::synthetic_gid_from_name("SM590000"), None);
+        assert_eq!(super::synthetic_gid_from_name("g40junk"), None);
+        let map = super::unique_glyph_unicode([
+            (40, 'E'), (40, 'E'), (41, 'A'), (41, 'Á'), (42, ' '),
+        ]);
+        assert_eq!(map.get(&40), Some(&Some('E')));
+        assert_eq!(map.get(&41), Some(&None));
+        assert_eq!(map.get(&42), Some(&Some(' ')));
     }
 
     /// The stale-CMap case: ToUnicode maps a code to its own identity while

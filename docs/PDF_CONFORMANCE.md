@@ -76,8 +76,9 @@ letters. Their numbers must not be shifted to ASCII or decoded through an
 unrelated built-in encoding: PDF `/Differences` selects the actual glyph,
 so recovery needs a verified Unicode cmap, meaningful selected glyph name,
 or outline identity. The renderer already implements glyph selection in
-`render/font/`; any mapping improvement should reuse it and preserve the
-ONNX-free text-layer path. PR #4 tested and rejected an incorrect encoding
+`render/font/`; the narrow resolver reuses its selected-GID rule and inverts only an unambiguous
+Unicode cmap of a nonsymbolic embedded TrueType font, in every feature build.
+Unresolved or ambiguous glyphs retain the PDF name. PR #4 tested and rejected an incorrect encoding
 precedence and was **closed without merging**.
 
 
