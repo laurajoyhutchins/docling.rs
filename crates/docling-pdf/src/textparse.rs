@@ -451,8 +451,7 @@ fn embedded_truetype_gid_unicode(
 ) -> HashMap<u8, char> {
     let mut recovered = HashMap::new();
     if names.is_empty()
-        || fdict.get(b"Subtype").ok().and_then(|v| v.as_name().ok())
-            != Some(b"TrueType".as_slice())
+        || fdict.get(b"Subtype").ok().and_then(|v| v.as_name().ok()) != Some(b"TrueType".as_slice())
     {
         return recovered;
     }
@@ -463,7 +462,14 @@ fn embedded_truetype_gid_unicode(
     else {
         return recovered;
     };
-    if desc.get(b"Flags").ok().and_then(|v| v.as_i64().ok()).unwrap_or(0) & 4 != 0 {
+    if desc
+        .get(b"Flags")
+        .ok()
+        .and_then(|v| v.as_i64().ok())
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         return recovered;
     }
     let Some(bytes) = desc
@@ -498,7 +504,8 @@ fn embedded_truetype_gid_unicode(
     }
     let by_gid = unique_glyph_unicode(pairs);
     for (&code, name) in names {
-        let selected = face.glyph_index_by_name(name)
+        let selected = face
+            .glyph_index_by_name(name)
             .map(|gid| gid.0)
             .or_else(|| synthetic_gid_from_name(name));
         if let Some(gid) = selected.filter(|gid| *gid > 0 && *gid < face.number_of_glyphs()) {
@@ -2958,9 +2965,8 @@ mod glyph_names {
         assert_eq!(super::synthetic_gid_from_name("index87"), Some(87));
         assert_eq!(super::synthetic_gid_from_name("SM590000"), None);
         assert_eq!(super::synthetic_gid_from_name("g40junk"), None);
-        let map = super::unique_glyph_unicode([
-            (40, 'E'), (40, 'E'), (41, 'A'), (41, 'Á'), (42, ' '),
-        ]);
+        let map =
+            super::unique_glyph_unicode([(40, 'E'), (40, 'E'), (41, 'A'), (41, 'Á'), (42, ' ')]);
         assert_eq!(map.get(&40), Some(&Some('E')));
         assert_eq!(map.get(&41), Some(&None));
         assert_eq!(map.get(&42), Some(&Some(' ')));
