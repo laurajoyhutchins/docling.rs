@@ -3468,7 +3468,10 @@ pub fn assemble_page(
                 // the public model, and the DocLang structure overlay derives
                 // from them so DCLX emits real span/header tokens. The
                 // geometric fallback has no per-cell records.
-                let unplaced = table_rows[i].as_ref().map(|g| g.unplaced.clone()).unwrap_or_default();
+                let unplaced = table_rows[i]
+                    .as_ref()
+                    .map(|g| g.unplaced.clone())
+                    .unwrap_or_default();
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
                     Some(grid) => {
                         let nrows = grid.rows.len();
@@ -3573,21 +3576,31 @@ pub fn assemble_page(
                 // Keep the source text and its coordinates in a separate
                 // group rather than fabricate cells in the TableFormer grid.
                 if !unplaced.is_empty() {
-                    let children = unplaced.into_iter().map(|word| {
-                        let bbox = word.bbox;
-                        let coord = |v: f32, extent: f32| -> u16 {
-                            if extent <= 0.0 { return 0; }
-                            ((512.0 * f64::from(v) / f64::from(extent)).round() as i64)
-                                .clamp(0, 511) as u16
-                        };
-                        let location = [
-                            coord(bbox[0], page.width), coord(bbox[1], page_h),
-                            coord(bbox[2], page.width), coord(bbox[3], page_h),
-                        ];
-                        located(location, Node::Paragraph {
-                            text: md_escape(&word.text),
+                    let children = unplaced
+                        .into_iter()
+                        .map(|word| {
+                            let bbox = word.bbox;
+                            let coord = |v: f32, extent: f32| -> u16 {
+                                if extent <= 0.0 {
+                                    return 0;
+                                }
+                                ((512.0 * f64::from(v) / f64::from(extent)).round() as i64)
+                                    .clamp(0, 511) as u16
+                            };
+                            let location = [
+                                coord(bbox[0], page.width),
+                                coord(bbox[1], page_h),
+                                coord(bbox[2], page.width),
+                                coord(bbox[3], page_h),
+                            ];
+                            located(
+                                location,
+                                Node::Paragraph {
+                                    text: md_escape(&word.text),
+                                },
+                            )
                         })
-                    }).collect();
+                        .collect();
                     nodes.push(Node::Group {
                         label: "unplaced_table_text".into(),
                         name: Some("source_words_without_cell_assignment".into()),
