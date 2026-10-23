@@ -1218,63 +1218,6 @@ fn order_with_containers<T: Clone>(
     ordered_parents
 }
 
-/// Attach a small section number in a neighbouring *text* box to its
-/// heading when it occupies the same baseline and sits immediately to the
-/// right. Layout models sometimes split a numbered heading's marker away
-/// from its heading (e.g. a two-column journal section heading). This is
-/// geometry-based, not document/language/fixture-specific. Margin page
-/// numbers, distant text and numeric values on another line stay separate.
-fn attach_heading_suffix_numbers(
-    regions: &[Region],
-    texts: &mut [String],
-    consumed: &mut [bool],
-    page_h: f32,
-) {
-    for (heading_i, heading) in regions.iter().enumerate() {
-        if !matches!(heading.label, "title" | "section_header")
-            || consumed[heading_i]
-            || texts[heading_i].trim().is_empty()
-        {
-            continue;
-        }
-        let hh = (heading.b - heading.t).max(0.0);
-        let mut best: Option<(usize, f32)> = None;
-        for (j, marker) in regions.iter().enumerate() {
-            if consumed[j] || marker.label != "text" || j == heading_i {
-                continue;
-            }
-            let number = texts[j].trim();
-            if number.is_empty() || number.len() > 2 || !number.bytes().all(|c| c.is_ascii_digit())
-            {
-                continue;
-            }
-            // A small number at the top/bottom margin is a page number,
-            // even when the title itself also sits nearby.
-            if marker.t < page_h * 0.12 || marker.b > page_h * 0.88 {
-                continue;
-            }
-            let mh = (marker.b - marker.t).max(0.0);
-            let overlap = (heading.b.min(marker.b) - heading.t.max(marker.t)).max(0.0);
-            if hh == 0.0 || mh == 0.0 || overlap / hh.min(mh) < 0.65 {
-                continue;
-            }
-            let gap = marker.l - heading.r;
-            if !(-1.5..=16.0).contains(&gap) {
-                continue;
-            }
-            if best.is_none_or(|(_, old_gap)| gap.abs() < old_gap) {
-                best = Some((j, gap.abs()));
-            }
-        }
-        if let Some((j, _)) = best {
-            let suffix = texts[j].trim().to_string();
-            texts[heading_i].push(' ');
-            texts[heading_i].push_str(&suffix);
-            consumed[j] = true;
-        }
-    }
-}
-
 /// Furniture / not-yet-emitted labels.
 fn is_skipped(label: &str) -> bool {
     matches!(
@@ -3344,7 +3287,6 @@ pub fn assemble_page(
         .iter()
         .map(|k| kid_texts.by_ref().take(k.len()).collect())
         .collect();
-    attach_heading_suffix_numbers(&regions, &mut region_texts, &mut consumed, page_h);
     let is_text: Vec<bool> = regions
         .iter()
         .enumerate()
@@ -5348,39 +5290,6 @@ mod tests {
         // The docling-parse sanitizer's internal spacing is preserved as
         // placed; line breaks/tabs normalize to a space, ends trim.
         assert_eq!(clean_text("a   b\nc"), "a   b c");
-    }
-
-    #[test]
-    fn numbered_heading_suffix_only_attaches_neighbouring_nonmargin_number() {
-        let reg = |label, l, t, r, b| Region {
-            label,
-            score: 0.95,
-            l,
-            t,
-            r,
-            b,
-        };
-        let regions = vec![
-            reg("section_header", 50.0, 260.0, 110.0, 277.0),
-            reg("text", 117.0, 262.0, 124.0, 276.0), // section number
-            reg("text", 500.0, 262.0, 515.0, 276.0), // distant numeric
-            reg("text", 117.0, 320.0, 124.0, 336.0), // different line
-            reg("section_header", 50.0, 26.0, 110.0, 43.0),
-            reg("text", 116.0, 27.0, 123.0, 42.0), // page margin number
-        ];
-        let mut texts = vec![
-            "Introduction".into(),
-            "1".into(),
-            "25".into(),
-            "2".into(),
-            "Contents".into(),
-            "3".into(),
-        ];
-        let mut consumed = vec![false; regions.len()];
-        super::attach_heading_suffix_numbers(&regions, &mut texts, &mut consumed, 800.0);
-        assert_eq!(texts[0], "Introduction 1");
-        assert_eq!(texts[4], "Contents");
-        assert_eq!(consumed, vec![false, true, false, false, false, false]);
     }
 
     /// A form or key/value wrapper must survive assembly as an owned group,

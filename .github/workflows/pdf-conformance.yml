@@ -118,7 +118,6 @@ jobs:
         shell: bash
         run: |
           scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib assembled_container_groups_preserve_children_and_plain_markdown
-          scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib numbered_heading_suffix_only_attaches_neighbouring_nonmargin_number
           scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib form_children_stay_together_in_reading_order
 
       - name: Snapshot conformance

@@ -36,7 +36,7 @@ older, pypdfium2-era docling's and the pipeline was scored with OCR on.
 **10 / 18 strict** · **11 / 18 whitespace-normalized** against upstream's
 current groundtruth (docling ≥ 2.123: docling-parse render, `do_ocr=False`,
 `compact_tables=True`; 18 fixtures — `table_misidentified_as_form`
-(docling#4064) joined the corpus with this refresh). Total 328 diff lines with
+(docling#4064) joined the corpus with this refresh). Total 324 diff lines with
 the docling-parse renderer the baselines are measured with (374 before #528
 recovered redp5110's rotated table headers, 346 before #609 kept glyphs stacked
 at one x apart, 342 before #813 ported docling's caption matcher — 2203.01017v2
@@ -63,7 +63,7 @@ below). (The two Korean image-only pages `skipped_1page` /
 | normal_4pages | 12 | docling folds the page-number glyph into the heading cluster (`## 들어가며 1`) where we emit it as its own item, and the `※` footnotes order |
 | 2203.01017v2 | 15 | the `c. Structure predicted by TableFormer:` item's slot under Figure 1, accent spacing in the references (`Herv´e D´ejean`) |
 | 2206.01062 | 10 | author-block cluster splits (model-borderline), Table 5's merged first column |
-| table_misidentified_as_form | 48 | the form container's nested table / picture (docling#4064): docling nests them inside the form region and keeps the heading, we flatten the region |
+| table_misidentified_as_form | 44 | the form container's nested table / picture (docling#4064): the form group now retains nested table/picture ownership; its Markdown still differs in separate region/text ordering |
 | table_mislabeled_as_picture | 85 | the survey over-detected as tables; docling keeps a cell's leading indentation (`\|   They work in parallel…`) |
 | redp5110_sampled | 152 | TOC: docling's cell matching puts the dot leaders into the page-number column (`. . . . . . . vii`), ours keeps them with the title (`. vii`); cover-page ordering |
 
