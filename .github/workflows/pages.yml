@@ -13,6 +13,8 @@
 #
 # One-time setup in the repository: Settings → Pages → Build and deployment →
 # Source: "GitHub Actions".
+# Forks additionally set repository variable ENABLE_PAGES=true when the Pages
+# site has been enabled. The fork stays quiet until both are configured.
 name: pages
 
 on:
@@ -42,6 +44,8 @@ concurrency:
 jobs:
   build:
     name: build the demo
+    # Forks must explicitly enable Pages before spending CI on a site they cannot deploy.
+    if: github.repository == 'docling-project/docling.rs' || vars.ENABLE_PAGES == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
