@@ -3593,17 +3593,24 @@ pub fn assemble_page(
                                 coord(bbox[2], page.width),
                                 coord(bbox[3], page_h),
                             ];
-                            located(
-                                location,
-                                Node::Paragraph {
-                                    text: md_escape(&word.text),
-                                },
-                            )
+                            // Keep parser-cell identity in the structured
+                            // document, independently of any TableFormer cell.
+                            Node::Group {
+                                label: "unplaced_table_word".into(),
+                                name: Some(format!("source_cell_{}", word.source_cell_id)),
+                                layer: None,
+                                children: vec![located(
+                                    location,
+                                    Node::Paragraph {
+                                        text: md_escape(&word.text),
+                                    },
+                                )],
+                            }
                         })
                         .collect();
                     nodes.push(Node::Group {
                         label: "unplaced_table_text".into(),
-                        name: Some("source_words_without_cell_assignment".into()),
+                        name: Some(format!("table_region_{i}_unplaced_words")),
                         layer: None,
                         children,
                     });
