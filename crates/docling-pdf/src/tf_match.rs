@@ -566,83 +566,10 @@ fn pick_orphan_cells(
             }],
         );
     }
-    // Only an orphan with one measured grid coordinate can acquire the
-    // other from nearby cell geometry. When both coordinates are unknown,
-    // preserve the PDF word separately rather than fabricating table cells.
-    let anchors: Vec<TfCell> = table_cells
-        .iter()
-        .filter(|c| {
-            c.cell_class > 1
-                && c.bbox.iter().all(|v| v.is_finite())
-                && c.bbox[0] <= c.bbox[2]
-                && c.bbox[1] <= c.bbox[3]
-        })
-        .cloned()
-        .collect();
-    let nearest_band = |axis: usize, coord: f64, row: bool| -> Option<usize> {
-        let (lo, hi) = if axis == 0 { (0, 2) } else { (1, 3) };
-        let mut bands: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
-        for c in &anchors {
-            let id = if row { c.row_id } else { c.column_id };
-            let bounds = bands
-                .entry(id)
-                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
-            bounds.0 = bounds.0.min(c.bbox[lo]);
-            bounds.1 = bounds.1.max(c.bbox[hi]);
-        }
-        bands
-            .into_iter()
-            .map(|(id, (min, max))| (id, (min - coord).max(0.0).max(coord - max)))
-            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
-            .map(|(id, _)| id)
-    };
-    for word in pdf_cells {
-        if matches.contains_key(&word.id)
-            || word.text.trim().is_empty()
-            || !word.bbox.iter().all(|v| v.is_finite())
-            || word.bbox[0] >= word.bbox[2]
-            || word.bbox[1] >= word.bbox[3]
-        {
-            continue;
-        }
-        let owner = match (row_of.get(&word.id), col_of.get(&word.id)) {
-            (Some(&row), None) => {
-                nearest_band(0, (word.bbox[0] + word.bbox[2]) / 2.0, false).map(|col| (row, col))
-            }
-            (None, Some(&(col, _, _))) => {
-                nearest_band(1, (word.bbox[1] + word.bbox[3]) / 2.0, true).map(|row| (row, col))
-            }
-            _ => None,
-        };
-        let Some((row, col)) = owner else { continue };
-        let table_cell_id = if let Some(cell) = table_cells
-            .iter_mut()
-            .find(|c| c.row_id == row && c.column_id == col)
-        {
-            cell.bbox = merge_two_bboxes(&cell.bbox, &word.bbox);
-            cell.cell_id
-        } else {
-            max_cell_id += 1;
-            table_cells.push(TfCell {
-                bbox: word.bbox,
-                cell_id: max_cell_id,
-                row_id: row,
-                column_id: col,
-                cell_class: 2,
-                colspan_val: 0,
-                rowspan_val: 0,
-            });
-            max_cell_id
-        };
-        matches.insert(
-            word.id,
-            vec![MatchEntry {
-                table_cell_id,
-                // Negative: inferred coordinate, not a direct match.
-                score: -1.0,
-            }],
-        );
-    }
+    // Do not infer a TableFormer row or column from a nearby band. The
+    // model-backed grid must only contain assignments supported by both
+    // observed coordinates. Words with incomplete ownership remain available
+    // through match_and_post_process_with_unplaced and keep their source bbox.
     (matches, table_cells, max_cell_id)
 }
 
@@ -743,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn orphan_recovery_requires_one_measured_band() {
+    fn words_outside_a_row_or_column_are_not_forced_into_the_grid() {
         let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
         let words = [
             word(1, "inside", 20.0, 15.0),
@@ -752,25 +679,13 @@ mod tests {
             word(4, "outside both", 300.0, 90.0),
         ];
         let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
-        assert_eq!(
-            matches.len(),
-            3,
-            "no supported band means no grid assignment"
-        );
-        assert!(!matches.contains_key(&4));
-        assert!(
-            matches[&1][0].score >= 0.0,
-            "normal band match is unchanged"
-        );
-        for id in [2, 3] {
-            assert!(matches[&id][0].score < 0.0, "fallback is observable");
+        assert_eq!(matches.len(), 1, "grid owns only a two-axis match");
+        assert!(matches.contains_key(&1));
+        for id in [2, 3, 4] {
+            assert!(!matches.contains_key(&id), "unsupported cell ownership");
         }
-        for (id, col) in [(1, 0), (2, 1), (3, 1)] {
-            let owned = matches[&id][0].table_cell_id;
-            let assigned = cells.iter().find(|cell| cell.cell_id == owned).unwrap();
-            assert_eq!(assigned.column_id, col);
-            assert_eq!(assigned.row_id, 0);
-        }
+        assert_eq!(cells.len(), 2, "no inferred grid cells");
+        assert!(matches[&1][0].score >= 0.0);
     }
 
     #[test]
