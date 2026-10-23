@@ -67,6 +67,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check PDF conformance harness syntax
+        run: bash -n scripts/conformance/pdf_groundtruth.sh
+
       # rustup is preinstalled on GitHub-hosted runners; use it directly rather
       # than a marketplace toolchain action (the docling-project org allowlists
       # only GitHub-owned / vetted actions).
