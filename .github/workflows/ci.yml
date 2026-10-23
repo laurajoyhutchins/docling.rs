@@ -436,8 +436,9 @@ jobs:
     name: release
     needs: [lint, test]
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.force_version != '')
+      github.repository == 'docling-project/docling.rs' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.force_version != ''))
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the version-bump commit + tag
