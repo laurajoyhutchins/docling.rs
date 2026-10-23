@@ -5289,6 +5289,84 @@ mod tests {
         assert_eq!(clean_text("a   b\nc"), "a   b c");
     }
 
+    /// A form or key/value wrapper must survive assembly as an owned group,
+    /// including nested structured items. The wrapper itself prints no Markdown
+    /// text, but JSON/tree consumers must not lose its parent relationship.
+    #[test]
+    fn assembled_container_groups_preserve_children_and_plain_markdown() {
+        use docling_core::{CaptionParent, DoclingDocument, Table};
+        let region = |label, t| Region {
+            label,
+            score: 0.9,
+            l: 0.0,
+            t,
+            r: 200.0,
+            b: t + 15.0,
+        };
+        let regions = vec![
+            region("text", 0.0),
+            region("form", 15.0),
+            region("section_header", 20.0),
+            region("table", 45.0),
+            region("picture", 70.0),
+            region("key_value_region", 100.0),
+            region("text", 110.0),
+        ];
+        let table = Node::Table(Table {
+            rows: vec![vec!["key".into(), "value".into()]],
+            location: None,
+            structure: None,
+            cell_blocks: None,
+            cells: None,
+            caption: None,
+            caption_parent: CaptionParent::Item,
+            caption_location: None,
+        });
+        let picture = Node::Picture {
+            caption: None,
+            caption_href: None,
+            image: None,
+            classification: None,
+            description: None,
+            caption_parent: CaptionParent::Item,
+            caption_location: None,
+        };
+        let mut nodes = vec![
+            Node::PageInfo { page_no: 0, width: 200.0, height: 300.0 },
+            Node::Paragraph { text: "outside".into() },
+            Node::Heading { level: 2, text: "Inside".into() },
+            table,
+            picture,
+            Node::Paragraph { text: "after".into() },
+        ];
+        let mut before = DoclingDocument::new("form-test");
+        before.nodes = nodes.clone();
+        before.compact_tables = true;
+
+        // The form owns the heading/table/picture; the empty key/value
+        // wrapper is still part of the document structure, not plain prose.
+        let parents = vec![None, None, Some(1), Some(1), Some(1), None, None];
+        let offsets = vec![1, 2, 2, 3, 4, 5, 5, 6];
+        super::group_container_nodes(&regions, &parents, &offsets, &mut nodes);
+        assert_eq!(nodes.len(), 5);
+        match &nodes[2] {
+            Node::Group { label, name, children, .. } => {
+                assert_eq!(label, "form_area");
+                assert_eq!(name.as_deref(), Some("group"));
+                assert!(matches!(children.as_slice(), [
+                    Node::Heading { .. }, Node::Table(_), Node::Picture { .. }
+                ]));
+            }
+            other => panic!("expected form group, got {other:?}"),
+        }
+        assert!(matches!(&nodes[3], Node::Group { label, children, .. }
+            if label == "key_value_area" && children.is_empty()));
+        assert!(matches!(&nodes[4], Node::Paragraph { text } if text == "after"));
+        let mut after = before.clone();
+        after.nodes = nodes;
+        assert_eq!(after.export_to_markdown(), before.export_to_markdown());
+    }
+
     /// docling#4064: a form's children are emitted together where the form
     /// sits in the top-level order, not interleaved with surrounding text.
     #[test]
