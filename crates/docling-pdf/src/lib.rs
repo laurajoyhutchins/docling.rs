@@ -1756,23 +1756,7 @@ impl Worker {
                 .cells
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| quality::is_opaque_glyph_run(&c.text))
-                .filter(|(_, c)| {
-                    let area = ((c.r - c.l) * (c.b - c.t)).max(1.0);
-                    regions.iter().any(|r| {
-                        // Code/formula pixels have their own domain model;
-                        // OCR must not rewrite an identifier or expression.
-                        matches!(
-                            r.label,
-                            "text" | "title" | "section_header" | "list_item"
-                                | "caption" | "footnote"
-                        ) && {
-                            let w = (c.r.min(r.r) - c.l.max(r.l)).max(0.0);
-                            let h = (c.b.min(r.b) - c.t.max(r.t)).max(0.0);
-                            w * h / area > 0.80
-                        }
-                    })
-                })
+                .filter(|(_, c)| quality::is_recoverable_native_glyph_cell(c, &regions))
                 .map(|(i, c)| {
                     let pad = 2.0;
                     (
@@ -1796,14 +1780,14 @@ impl Worker {
                     page.scale,
                     ocr_scale,
                 );
-                if let Some(ocr) = self.ocr_model()? {
+                if let Ok(Some(ocr)) = self.ocr_model() {
                     let mut replacements = Vec::new();
                     for (index, area) in candidates {
                         // A failed recognition must not discard the PDF source.
                         let Ok(scored) = ocr.ocr_page(img, &[area], scl) else {
                             continue;
                         };
-                        if quality::usable_glyph_ocr(&scored) {
+                        if quality::confined_glyph_ocr(&scored, &page.cells[index]) {
                             replacements.push((index, scored));
                         }
                     }
