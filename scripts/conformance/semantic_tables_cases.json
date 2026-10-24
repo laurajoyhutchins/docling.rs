@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "reference_notes": "Expected bindings were independently read from the linked source-PDF pages, not copied from the Python Docling JSON or Rust Markdown. Scores are semantic regressions, not proof that entire PDFs were extracted correctly.",
+  "cases": [
+    {
+      "id": "ibm-redp5110-toc",
+      "source": "tests/data/pdf/sources/redp5110_sampled.pdf",
+      "source_git_blob": "fdfa5a781e7962c38857582ba931ff2c41b9825c",
+      "source_url": "https://www.redbooks.ibm.com/redpapers/pdfs/redp5110.pdf",
+      "original_pdf_pages": [
+        5
+      ],
+      "bindings": [
+        {
+          "name": "Notices belongs to Roman page vii",
+          "cells": [
+            {
+              "contains": "Notices"
+            },
+            {
+              "equals": "vii"
+            }
+          ]
+        },
+        {
+          "name": "Chapter 1 belongs to page 1",
+          "cells": [
+            {
+              "contains": "Chapter 1. Securing and protecting IBM DB2 data"
+            },
+            {
+              "equals": "1"
+            }
+          ]
+        },
+        {
+          "name": "Chapter 2 belongs to page 7",
+          "cells": [
+            {
+              "contains": "Chapter 2. Roles and separation of duties"
+            },
+            {
+              "equals": "7"
+            }
+          ]
+        },
+        {
+          "name": "Security Administrator subsection belongs to page 9",
+          "cells": [
+            {
+              "contains": "Security Administrator function: QIBM_DB_SECADM"
+            },
+            {
+              "equals": "9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "otsl-paper-hpo-table",
+      "source": "tests/data/pdf/sources/2305.03393v1-pg9.pdf",
+      "source_git_blob": "d667217c2009127410fc15b8e9208381e555d5f0",
+      "source_url": "https://arxiv.org/pdf/2305.03393",
+      "original_pdf_pages": [
+        9
+      ],
+      "bindings": [
+        {
+          "name": "6x6 OTSL run retains TED and runtime columns",
+          "cells": [
+            {
+              "equals": "OTSL"
+            },
+            {
+              "equals": "0.965"
+            },
+            {
+              "equals": "0.934"
+            },
+            {
+              "equals": "0.955"
+            },
+            {
+              "equals": "0.88"
+            },
+            {
+              "equals": "2.73"
+            }
+          ]
+        },
+        {
+          "name": "6x6 HTML run retains TED and runtime columns",
+          "cells": [
+            {
+              "equals": "HTML"
+            },
+            {
+              "equals": "0.969"
+            },
+            {
+              "equals": "0.927"
+            },
+            {
+              "equals": "0.955"
+            },
+            {
+              "equals": "0.857"
+            },
+            {
+              "equals": "5.39"
+            }
+          ]
+        },
+        {
+          "name": "4x4 OTSL run retains TED and runtime columns",
+          "cells": [
+            {
+              "equals": "OTSL"
+            },
+            {
+              "equals": "0.938"
+            },
+            {
+              "equals": "0.904"
+            },
+            {
+              "equals": "0.927"
+            },
+            {
+              "equals": "0.853"
+            },
+            {
+              "equals": "1.97"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
