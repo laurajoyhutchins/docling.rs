@@ -824,7 +824,7 @@ impl LoadedFont {
                 }
             }
             // `gXX` / `glyphXX` / `index XX` names address glyphs directly.
-            if let Some(g) = gid_from_name(n) {
+            if let Some(g) = crate::textparse::synthetic_gid_from_name(n) {
                 return Some(GlyphId(g));
             }
         }
@@ -883,17 +883,6 @@ fn map_cid(map: &[u8], cid: u32) -> u32 {
         (Some(hi), Some(lo)) => (u32::from(*hi) << 8) | u32::from(*lo),
         _ => 0,
     }
-}
-
-fn gid_from_name(n: &str) -> Option<u16> {
-    for prefix in ["glyph", "index", "cid", "g", "G"] {
-        if let Some(rest) = n.strip_prefix(prefix) {
-            if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
-                return rest.parse().ok();
-            }
-        }
-    }
-    None
 }
 
 /// The Standard-encoding name of a character (the reverse of the AGL subset

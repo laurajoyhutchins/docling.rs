@@ -51,7 +51,6 @@ ml = [
     "dep:docling-onnx",
     "dep:libloading",
     "dep:tiny-skia",
-    "dep:ttf-parser",
     "dep:hayro-jpeg2000",
     "dep:hayro-jbig2",
 ]
@@ -127,7 +126,7 @@ hayro-jpeg2000 = { version = "0.4.1", default-features = false, features = ["sim
 # in the crate; `simd` only speeds up halftone regions), its `image` glue not
 # needed.
 hayro-jbig2 = { version = "0.3.1", default-features = false, features = ["std", "simd"], optional = true }
-ttf-parser = { version = "0.25", default-features = false, features = ["std", "glyph-names", "opentype-layout"], optional = true }
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "glyph-names", "opentype-layout"] }
 # CodeFormula enrichment decodes its VLM output with the HF tokenizer
 # (.models/code_formula/tokenizer.json) — same crate/features as docling-core's
 # chunking tokenizer.
