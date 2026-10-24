@@ -40,7 +40,7 @@ def source_digests(path: Path) -> tuple[str, str]:
 def normalized(text: str) -> str:
     # Ignore dot leaders, but preserve decimal points BETWEEN digits:
     # 0.965 must not equal "0 965", and 0.965 must not equal 0.969.
-    return " ".join(re.findall(r"[^\\W\\d_]+|\\d+(?:\\.\\d+)*", text.casefold()))
+    return " ".join(re.findall(r"[^\W\d_]+|\d+(?:\.\d+)*", text.casefold()))
 
 
 def matches(cell_text: str, fact: dict[str, str]) -> bool:
