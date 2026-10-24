@@ -86,30 +86,34 @@ def one_row_binding(cells: list[dict[str, Any]], facts: list[dict[str, str]]) ->
         raise ValueError("row binding must contain at least two column facts")
     if not cells:
         return False
-    max_row = max(c["end_row_offset_idx"] for c in cells)
-    for row in range(max_row):
-        candidates = [
-            [i for i, cell in enumerate(cells)
-             if cell["start_row_offset_idx"] <= row < cell["end_row_offset_idx"]
-             and matches(cell["text"], fact)]
-            for fact in facts
-        ]
-        if any(not group for group in candidates):
-            continue
+    candidates = [
+        [i for i, cell in enumerate(cells) if matches(cell["text"], fact)]
+        for fact in facts
+    ]
+    if any(not group for group in candidates):
+        return False
 
-        def search(index: int, previous_end: int, used: frozenset[int]) -> bool:
-            if index == len(candidates):
+    def search(
+        index: int, previous_end: int, row_start: int, row_end: int,
+        used: frozenset[int],
+    ) -> bool:
+        if index == len(candidates):
+            return row_start < row_end
+        for i in candidates[index]:
+            cell = cells[i]
+            shared_start = max(row_start, cell["start_row_offset_idx"])
+            shared_end = min(row_end, cell["end_row_offset_idx"])
+            if (
+                i not in used
+                and cell["start_col_offset_idx"] >= previous_end
+                and shared_start < shared_end
+                and search(index + 1, cell["end_col_offset_idx"],
+                           shared_start, shared_end, used | {i})
+            ):
                 return True
-            for i in candidates[index]:
-                cell = cells[i]
-                if i not in used and cell["start_col_offset_idx"] >= previous_end:
-                    if search(index + 1, cell["end_col_offset_idx"], used | {i}):
-                        return True
-            return False
+        return False
 
-        if search(0, 0, frozenset()):
-            return True
-    return False
+    return search(0, 0, 0, sys.maxsize, frozenset())
 
 
 def score_document(document: dict[str, Any], case: dict[str, Any]) -> list[dict[str, Any]]:
