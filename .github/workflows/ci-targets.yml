@@ -1,0 +1,168 @@
+name: CI target compatibility
+
+# Preserve original verification commands and job check names. Only trigger
+# this workflow when relevant sources or its own definition change.
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/ci/**'
+      - 'tests/data/**'
+      - '.github/workflows/ci-targets.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/ci/**'
+      - 'tests/data/**'
+      - '.github/workflows/ci-targets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  # The declarative converters compile for the browser (#79): check the
+  # feature-sliced `docling` on wasm32, build the wasm-bindgen crate, and log
+  # the gzipped module size (the number docs/README quote — ~3.4 MB).
+  wasm:
+    name: wasm32 (declarative converters)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (stable + wasm32 target)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-v2-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-v2-wasm-
+
+      - name: Check docling (no default features) on wasm32
+        run: cargo check -p docling --no-default-features --target wasm32-unknown-unknown --locked
+
+      - name: Check docling (pdf-text) on wasm32
+        run: cargo check -p docling --no-default-features --features pdf-text --target wasm32-unknown-unknown --locked
+
+      - name: Build docling-wasm (release)
+        run: cargo build -p docling-wasm --target wasm32-unknown-unknown --release --locked
+
+      - name: Host-side tests
+        run: cargo test -p docling-wasm --locked
+
+      - name: Module size
+        run: |
+          wasm=target/wasm32-unknown-unknown/release/docling_wasm.wasm
+          gzip -9 -c "$wasm" | wc -c | xargs -I{} echo "docling_wasm.wasm: $(stat -c%s "$wasm") bytes raw, {} bytes gzipped"
+
+      # actions/cache saves target/ in its post-step, i.e. after this runs:
+      # drop what is cheap to recreate (incremental data shouldn't exist with
+      # CARGO_INCREMENTAL=0; examples and final bin-crate executables relink
+      # in seconds — the compiled library deps are what's worth keeping), so
+      # the cache stays well under the runner's disk headroom.
+      - name: Trim target before cache save
+        if: always()
+        shell: bash
+        run: |
+          rm -rf target/debug/examples target/debug/incremental \
+                 target/release/examples target/release/incremental
+          find target/debug target/release -maxdepth 1 -type f ! -name '*.d' -size +5M -exec rm -f {} + 2>/dev/null || true
+
+  # IBM Z (#504): cross-check the s390x target — the only big-endian Tier 2
+  # target, so a byte-order assumption anywhere in the serializers or the PDF
+  # raster shows up here. On a pull request that is all this job does (two
+  # `cargo check`s, a couple of minutes with a warm cache). On a master push
+  # or a manual run it also runs docling-core's unit tests as s390x binaries
+  # under qemu-user and builds the CLI natively with `ort-load-dynamic` —
+  # pyke ships no ONNX Runtime for s390x, so that build dlopens the library
+  # at run time — to show the feature degrades: docling-onnx's loader test
+  # fails with the lookup message instead of ort's panic when no runtime is
+  # on the machine, and the CLI converts a DOCX in that state (a PDF would
+  # stop at the missing models first — CI has none). Those two steps are
+  # the slow part (a cold debug build of the whole CLI), hence not per PR.
+  s390x:
+    name: s390x (cross-check · qemu tests · ort-load-dynamic)
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER: s390x-linux-gnu-gcc
+      CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER: qemu-s390x-static -L /usr/s390x-linux-gnu
+      CC_s390x_unknown_linux_gnu: s390x-linux-gnu-gcc
+      CXX_s390x_unknown_linux_gnu: s390x-linux-gnu-g++
+      AR_s390x_unknown_linux_gnu: s390x-linux-gnu-ar
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (stable + s390x target) and the cross toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add s390x-unknown-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-s390x-linux-gnu g++-s390x-linux-gnu qemu-user-static
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            # ort-sys's extracted prebuilt ONNX Runtime (`<cache dir>/
+            # ort.pyke.io/dfbin/<target>/<hash>`): present, the build script
+            # skips the cdn.pyke.io download altogether. One path per OS;
+            # actions/cache ignores the ones that do not exist.
+            ~/.cache/ort.pyke.io
+            ~/Library/Caches/ort.pyke.io
+            ~/AppData/Local/ort.pyke.io
+          key: ${{ runner.os }}-cargo-v2-s390x-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-v2-s390x-
+
+      - name: Check docling (pdf-text) for s390x
+        run: cargo check -p docling-core -p docling --no-default-features --features pdf-text --target s390x-unknown-linux-gnu --locked
+
+      - name: Check docling-cli (ort-load-dynamic) for s390x
+        run: cargo check -p docling-cli --features ort-load-dynamic --target s390x-unknown-linux-gnu --locked
+
+      - name: docling-core unit tests as s390x binaries (qemu)
+        if: github.event_name != 'pull_request'
+        run: cargo test -p docling-core --lib --target s390x-unknown-linux-gnu --locked
+
+      - name: ort-load-dynamic degrades without a runtime (native)
+        if: github.event_name != 'pull_request'
+        run: |
+          cargo test -p docling-onnx --features load-dynamic --locked
+          cargo build -p docling-cli --features ort-load-dynamic --locked
+          ORT_DYLIB_PATH=/nonexistent/libonnxruntime.so ./target/debug/docling-rs tests/data/docx/sources/word_tables.docx > out.md
+          grep -q "Header 0.0" out.md
+
+      - name: Trim target before cache save
+        if: always()
+        shell: bash
+        run: |
+          rm -rf target/debug/examples target/debug/incremental \
+                 target/release/examples target/release/incremental
+          find target/debug target/release -maxdepth 1 -type f ! -name '*.d' -size +5M -exec rm -f {} + 2>/dev/null || true

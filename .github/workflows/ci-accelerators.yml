@@ -1,0 +1,133 @@
+name: CI accelerator compatibility
+
+# Preserve original verification commands and job check names. Only trigger
+# this workflow when relevant sources or its own definition change.
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/docling-onnx/**'
+      - 'crates/docling-cli/**'
+      - 'crates/docling-rag/**'
+      - 'crates/docling-core/**'
+      - 'crates/docling/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'scripts/ci/**'
+      - '.github/workflows/ci-accelerators.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'crates/docling-onnx/**'
+      - 'crates/docling-cli/**'
+      - 'crates/docling-rag/**'
+      - 'crates/docling-core/**'
+      - 'crates/docling/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'scripts/ci/**'
+      - '.github/workflows/ci-accelerators.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  # Build-verify the GPU execution-provider features (#74) without GPU
+  # runners: `cargo check` proves the feature plumbing and the EP registration
+  # code compile against the matching `ort` feature set. Each provider is
+  # checked on the platform its ONNX Runtime binaries exist for — actually
+  # *running* on GPU is out of scope for CI (no GPU hardware here). The
+  # cargo steps run through `cargo_retry_ort.sh`: each provider's ONNX
+  # Runtime is a separate prebuilt archive ort-sys fetches from cdn.pyke.io,
+  # and a dropped connection there ("Peer disconnected") is the one failure
+  # worth a second attempt — the extracted archive is cached across runs.
+  ep-features:
+    name: check (${{ matrix.features }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `slug` is the features list with `-` instead of `,` — actions/cache
+        # rejects keys containing commas.
+        include:
+          - os: ubuntu-latest
+            features: cuda
+            slug: cuda
+          - os: ubuntu-latest
+            features: cuda,tensorrt
+            slug: cuda-tensorrt
+          - os: macos-latest
+            features: coreml
+            slug: coreml
+          - os: windows-latest
+            features: directml
+            slug: directml
+          # CUDA on Windows (#840): pyke ships a Windows CUDA ONNX Runtime,
+          # so the cfg paths a Windows CUDA build takes — and `cuda` +
+          # `directml` together, CUDA registered first under `auto` — compile.
+          - os: windows-latest
+            features: cuda,directml
+            slug: cuda-directml
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            # ort-sys's extracted prebuilt ONNX Runtime (`<cache dir>/
+            # ort.pyke.io/dfbin/<target>/<hash>`): present, the build script
+            # skips the cdn.pyke.io download altogether. One path per OS;
+            # actions/cache ignores the ones that do not exist.
+            ~/.cache/ort.pyke.io
+            ~/Library/Caches/ort.pyke.io
+            ~/AppData/Local/ort.pyke.io
+          key: ${{ runner.os }}-cargo-v2-ep-${{ matrix.slug }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-v2-ep-${{ matrix.slug }}-
+
+      - name: Check docling-cli with GPU features
+        shell: bash
+        run: scripts/ci/cargo_retry_ort.sh cargo check -p docling-cli --features "${{ matrix.features }}"
+
+      # docling-rag mirrors the same EP features (ingest conversion + the
+      # onnx-embed embedder session route through docling-onnx).
+      - name: Check docling-rag with GPU features
+        shell: bash
+        run: scripts/ci/cargo_retry_ort.sh cargo check -p docling-rag --features "${{ matrix.features }},onnx-embed"
+
+      - name: Test docling-onnx EP selection with GPU features
+        run: 'cargo test -p docling-onnx --lib --features "${{ matrix.features }}"'
+
+      # actions/cache saves target/ in its post-step, i.e. after this runs:
+      # drop what is cheap to recreate (incremental data shouldn't exist with
+      # CARGO_INCREMENTAL=0; examples and final bin-crate executables relink
+      # in seconds — the compiled library deps are what's worth keeping), so
+      # the cache stays well under the runner's disk headroom.
+      - name: Trim target before cache save
+        if: always()
+        shell: bash
+        run: |
+          rm -rf target/debug/examples target/debug/incremental \
+                 target/release/examples target/release/incremental
+          find target/debug target/release -maxdepth 1 -type f ! -name '*.d' -size +5M -exec rm -f {} + 2>/dev/null || true
