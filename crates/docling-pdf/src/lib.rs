@@ -736,6 +736,9 @@ struct Prepared {
     regions: Vec<layout::Region>,
     ocr_confs: Vec<f32>,
     parse: Option<f64>,
+    /// The original PDF text from cells replaced by high-confidence
+    /// region-local OCR. Kept as invisible, located evidence in the document.
+    source_glyph_cells: Vec<pdfium_backend::TextCell>,
 }
 
 #[cfg(feature = "ml")]
@@ -1653,6 +1656,7 @@ impl Worker {
         let parse = quality::parse_score(&page.cells);
         // Recognition confidences of every OCR'd cell on this page → ocr_score.
         let mut ocr_confs: Vec<f32> = Vec::new();
+        let mut source_glyph_cells = Vec::new();
         // The bitmap the OCR reads (#254): with `ocr_scale` set, a resample of
         // the page render at the requested px/pt, built lazily on the first
         // OCR use so non-OCR pages never pay for it. Copied out of `self` up
@@ -1741,6 +1745,65 @@ impl Worker {
         // A one-line paragraph in the bottom margin under a body-less heading
         // is that heading's text, not furniture (deliberate deviation).
         assemble::reclaim_heading_body_footers(&mut regions, page.width);
+        // An embedded symbolic font can draw readable letters but expose
+        // only placeholder names (/g115/g3/...) in the PDF text layer.
+        // Such a cell is not valid native text and must not suppress OCR on
+        // an otherwise digital page. Retry ONLY an all-opaque cell that
+        // belongs to a regular text region. No document-specific glyph
+        // offsets, no whole-page OCR, no table-cell reassignment.
+        if !page.cells.is_empty() && !self.skip_ocr && !self.force_full_page_ocr {
+            let candidates: Vec<_> = page
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| quality::is_recoverable_native_glyph_cell(c, &regions))
+                .map(|(i, c)| {
+                    let pad = 2.0;
+                    (
+                        i,
+                        layout::Region {
+                            label: "text",
+                            score: 1.0,
+                            l: (c.l - pad).max(0.0),
+                            t: (c.t - pad).max(0.0),
+                            r: (c.r + pad).min(page.width),
+                            b: (c.b + pad).min(page.height),
+                        },
+                    )
+                })
+                .filter(|(_, r)| r.r > r.l && r.b > r.t)
+                .collect();
+            if !candidates.is_empty() {
+                let (img, scl) = ocr_input(
+                    &mut ocr_view,
+                    &page.image,
+                    page.scale,
+                    ocr_scale,
+                );
+                if let Ok(Some(ocr)) = self.ocr_model() {
+                    let mut replacements = Vec::new();
+                    for (index, area) in candidates {
+                        // A failed recognition must not discard the PDF source.
+                        let Ok(scored) = ocr.ocr_page(img, &[area], scl) else {
+                            continue;
+                        };
+                        if quality::confined_glyph_ocr(&scored, &page.cells[index]) {
+                            replacements.push((index, scored));
+                        }
+                    }
+                    // Reverse index order: replacement OCR may produce more
+                    // than one recognized line from a single source cell.
+                    for (index, scored) in replacements.into_iter().rev() {
+                        source_glyph_cells.push(page.cells[index].clone());
+                        ocr_confs.extend(scored.iter().map(|(_, conf)| *conf));
+                        page.cells.splice(
+                            index..=index,
+                            scored.into_iter().map(|(cell, _)| cell),
+                        );
+                    }
+                }
+            }
+        }
         // No text layer → recognise text from the page image via OCR.
         let ocred = page.cells.is_empty();
         // Lines the text detector found outside every layout region (#429).
@@ -2014,6 +2077,7 @@ impl Worker {
             regions,
             ocr_confs,
             parse,
+            source_glyph_cells,
         })
     }
 
@@ -2030,6 +2094,7 @@ impl Worker {
             regions,
             ocr_confs,
             parse,
+            source_glyph_cells,
         } = prepared;
         if env::flag("DOCLING_RS_DEBUG_REGIONS") {
             for (i, r) in regions.iter().enumerate() {
@@ -2164,9 +2229,40 @@ impl Worker {
             .map(|(r, _)| r.clone())
             .collect();
         let conf = quality::page_confidence(parse, &elements, &ocr_confs);
-        let (nodes, links) = timing::timed("assemble_page", || {
+        let (mut nodes, links) = timing::timed("assemble_page", || {
             assemble::assemble_page(page, regions, &table_rows, &enrich_out, self.images.scale)
         });
+        if !source_glyph_cells.is_empty() {
+            let norm = |v: f32, extent: f32| -> u16 {
+                if extent <= 0.0 {
+                    return 0;
+                }
+                ((512.0 * f64::from(v) / f64::from(extent)).round() as i64)
+                    .clamp(0, 511) as u16
+            };
+            let children = source_glyph_cells
+                .into_iter()
+                .enumerate()
+                .map(|(i, c)| Node::Group {
+                    label: "source_glyph_cell".into(),
+                    name: Some(format!("pdf_source_cell_{i}")),
+                    layer: None,
+                    children: vec![Node::Located {
+                        location: [
+                            norm(c.l, page.width), norm(c.t, page.height),
+                            norm(c.r, page.width), norm(c.b, page.height),
+                        ],
+                        inner: Box::new(Node::Paragraph { text: c.text }),
+                    }],
+                })
+                .collect();
+            nodes.push(Node::Group {
+                label: "ocr_recovered_glyphs".into(),
+                name: Some("native_pdf_glyph_evidence".into()),
+                layer: Some(docling_core::ContentLayer::Invisible),
+                children,
+            });
+        }
         Ok((nodes, links, conf, self.page_image(n, page)))
     }
 }
