@@ -70,6 +70,9 @@ jobs:
       - name: Check PDF conformance harness syntax
         run: bash -n scripts/conformance/pdf_groundtruth.sh
 
+      - name: Test source-grounded table scorer (no models)
+        run: python3 -m unittest discover -s scripts/conformance -p test_semantic_tables.py
+
       # rustup is preinstalled on GitHub-hosted runners; use it directly rather
       # than a marketplace toolchain action (the docling-project org allowlists
       # only GitHub-owned / vetted actions).
@@ -149,6 +152,24 @@ jobs:
           if [ -n "$got" ] && [ "$got" != "$doc" ]; then
             echo "::warning file=docs/PDF_CONFORMANCE.md::groundtruth reads $got strict, the doc's headline says $doc — refresh the Current state table"
           fi
+
+      # Report semantic source-fidelity separately from Python Markdown parity.
+      # Intentionally informational until actual model-backed results are reviewed
+      # and an exact-head semantic baseline is established for issue #11.
+      - name: Source-grounded table evidence (informational)
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/conformance/semantic_tables.py --report-only
+
+      - name: Upload source-grounded table evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-tables-${{ github.sha }}
+          path: target/semantic_tables.json
+          retention-days: 14
+          if-no-files-found: warn
 
       # actions/cache saves target/ in its post-step, i.e. after this runs:
       # drop what is cheap to recreate so the cache stays under the runner's
