@@ -82,6 +82,10 @@ class SemanticTableTests(unittest.TestCase):
             {"equals": "OTSL"}, {"equals": "0.965"},
         ]))
 
+    def test_decimal_point_is_semantically_significant(self):
+        self.assertNotEqual(audit.normalized("0.965"), audit.normalized("0 965"))
+        self.assertEqual(audit.normalized("Notices . . . vii"), "notices vii")
+
     def test_only_first_class_cells_count_not_repeated_grid(self):
         doc = {"tables": [{"data": {
             "num_rows": 1, "num_cols": 2, "table_cells": [],
