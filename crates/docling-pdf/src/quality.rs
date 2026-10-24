@@ -44,6 +44,48 @@ pub fn rate_text_quality(text: &str) -> f64 {
     (1.0 - penalty).max(0.0)
 }
 
+/// A whole text cell consisting of three or more unresolved synthetic PDF
+/// glyph names. Only these all-opaque runs are eligible for a *local* OCR
+/// fallback: ordinary text containing slash paths, IDs or code must not be
+/// reinterpreted as missing glyphs.
+pub fn is_opaque_glyph_run(text: &str) -> bool {
+    let mut rest = text.trim();
+    let mut count = 0;
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        let Some(token) = rest.strip_prefix('/') else {
+            return false;
+        };
+        let Some(tail) = ["glyph", "index", "cid", "CID", "g", "G"]
+            .iter()
+            .find_map(|prefix| token.strip_prefix(prefix))
+        else {
+            return false;
+        };
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return false;
+        }
+        rest = &tail[digits..];
+        count += 1;
+    }
+    count >= 3
+}
+
+/// A glyph-recovery OCR attempt is only a substitute when every recognized
+/// line has high confidence and readable text. Inconclusive OCR leaves the
+/// original source tokens intact, without silently dropping the PDF layer.
+pub fn usable_glyph_ocr(cells: &[(TextCell, f32)]) -> bool {
+    !cells.is_empty()
+        && cells.iter().map(|(c, _)| c.text.trim().chars().count()).sum::<usize>() >= 4
+        && cells.iter().all(|(c, conf)| {
+            conf.is_finite()
+                && *conf >= 0.90
+                && rate_text_quality(&c.text) > 0.0
+                && !is_opaque_glyph_run(&c.text)
+        })
+}
+
 /// The page `parse_score`: the 10th-percentile `rate_text_quality` over the
 /// extracted text-layer cells (the quantile emphasises problem cells, matching
 /// docling's page-preprocessing stage). Unset when the page has no text layer
@@ -130,6 +172,30 @@ mod tests {
         assert_eq!(rate_text_quality(&format!("{frag} {frag}")), 1.0);
         let three = format!("{frag} {frag} {frag}");
         assert!((rate_text_quality(&three) - 0.7).abs() < 1e-12, "{three}");
+    }
+
+    #[test]
+    fn only_wholly_opaque_pdf_glyph_cells_are_ocr_candidates() {
+        assert!(is_opaque_glyph_run("/g115/g3/g40/g81"));
+        assert!(is_opaque_glyph_run("/cid14 /glyph20 /index33"));
+        assert!(!is_opaque_glyph_run("/g115/g3"));
+        assert!(!is_opaque_glyph_run("Chapter /g12/g13/g14"));
+        assert!(!is_opaque_glyph_run("/g12 /real-path/file"));
+        assert!(!is_opaque_glyph_run("g115/g3/g40"));
+        assert!(!is_opaque_glyph_run("/g12/broken/g13"));
+    }
+
+    #[test]
+    fn uncertain_glyph_ocr_never_replaces_original_native_text() {
+        let cell = |text: &str| TextCell {
+            text: text.into(), l: 10.0, t: 10.0, r: 90.0, b: 20.0,
+        };
+        assert!(usable_glyph_ocr(&[(cell("Readable label"), 0.97)]));
+        assert!(!usable_glyph_ocr(&[(cell("Guess"), 0.70)]));
+        assert!(!usable_glyph_ocr(&[(cell("/g11/g22/g33"), 0.99)]));
+        assert!(!usable_glyph_ocr(&[(cell("A"), 0.99)]));
+        assert!(!usable_glyph_ocr(&[]));
+        assert!(!usable_glyph_ocr(&[(cell("Text"), f32::NAN)]));
     }
 
     #[test]
