@@ -56,9 +56,52 @@ impl DeclarativeBackend for DoclingJsonBackend {
         // Keep source-authored inline semantics in the existing typed tree when
         // this JSON document is entirely representable by its text/group model.
         // Other document kinds continue through the established flat path.
-        doc.tree = text_only_item_tree(&root);
+        if let Some(tree) = text_only_item_tree(&root) {
+            // Page sizes already have a typed representation. Keep them in
+            // nodes, where the existing JSON tree writer reads them, instead
+            // of treating otherwise-safe PDF-derived text as unrepresentable.
+            doc.nodes.extend(text_only_page_markers(&root).unwrap_or_default());
+            doc.tree = Some(tree);
+        }
         Ok(doc)
     }
+}
+
+/// Preserve source page geometry only when the Docling JSON writer can
+/// reproduce it with its existing PageInfo nodes. Images and unrepresentable
+/// floating-point sizes are not silently dropped or rounded into new facts.
+fn text_only_page_markers(root: &Value) -> Option<Vec<Node>> {
+    let Some(pages) = root.get("pages") else {
+        return Some(Vec::new());
+    };
+    let mut markers = Vec::new();
+    for (key, item) in pages.as_object()? {
+        let page_no: usize = key.parse().ok()?;
+        if page_no == 0 || item.as_object()?.keys().any(|k| !matches!(
+            k.as_str(), "page_no" | "size"
+        )) || item.get("page_no")?.as_u64()? != page_no as u64 {
+            return None;
+        }
+        let size = item.get("size")?.as_object()?;
+        if size.keys().any(|k| !matches!(k.as_str(), "width" | "height")) {
+            return None;
+        }
+        let dimension = |k: &str| -> Option<f32> {
+            let source = size.get(k)?.as_f64()?;
+            if !source.is_finite() || source <= 0.0 {
+                return None;
+            }
+            let stored = source as f32;
+            let round_tripped = ((stored as f64) * 100.0).round() / 100.0;
+            ((round_tripped - source).abs() < 0.000_000_1).then_some(stored)
+        };
+        markers.push(Node::PageInfo {
+            page_no,
+            width: dimension("width")?,
+            height: dimension("height")?,
+        });
+    }
+    Some(markers)
 }
 
 /// The JSON reader's flat nodes serve the legacy Markdown serializer, but
@@ -96,11 +139,9 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
     {
         return None;
     }
-    // The tree writer obtains page sizes from Node::PageInfo, which this
-    // reader does not yet recreate. Refuse to emit ungrounded page references.
-    if root.get("pages").is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty)) {
-        return None;
-    }
+    // The tree writer reads a source page map from Node::PageInfo; ensure
+    // every page entry is representable before admitting a typed round trip.
+    text_only_page_markers(root)?;
     let texts = root.get("texts")?.as_array()?;
     let groups = root.get("groups")?.as_array()?;
     let body = root.get("body")?.get("children")?.as_array()?;
