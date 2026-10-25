@@ -6,28 +6,24 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - 'crates/docling-onnx/**'
-      - 'crates/docling-cli/**'
-      - 'crates/docling-rag/**'
-      - 'crates/docling-core/**'
-      - 'crates/docling/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'crates/*/Cargo.toml'
-      - 'scripts/ci/**'
+      - '.cargo/**'
+      - 'rust-toolchain*'
+      - 'scripts/**'
+      - 'tests/data/**'
       - '.github/workflows/ci-accelerators.yml'
   push:
     branches: [master]
     paths:
-      - 'crates/docling-onnx/**'
-      - 'crates/docling-cli/**'
-      - 'crates/docling-rag/**'
-      - 'crates/docling-core/**'
-      - 'crates/docling/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'crates/*/Cargo.toml'
-      - 'scripts/ci/**'
+      - '.cargo/**'
+      - 'rust-toolchain*'
+      - 'scripts/**'
+      - 'tests/data/**'
       - '.github/workflows/ci-accelerators.yml'
   workflow_dispatch:
 
