@@ -1813,11 +1813,20 @@ These are deliberate or unavoidable divergences, not bugs.
    than docling-core's `DocItem` graph. JSON export *reconstructs* the full
    `$ref` wire format from it; JSON input maps the other way.
 
-2. **Inline formatting is baked into text.** Bold/italic/links/inline-math are
-   stored as Markdown markers inside the text string, where docling keeps
-   structured `formatting`/`hyperlink` fields. Consequence: for those spans the
-   exported JSON carries the *rendered* text rather than structured fields, and
-   ~9% of JSON→Markdown round-trips differ (URLs/`&`/`_` re-escaped by docling).
+2. **Inline formatting has two representation paths.** The flat `Node`
+   stream still embeds Markdown markers in many backends and is not a
+   lossless source of `formatting`/`hyperlink` fields. For imported
+   `JsonDocling` files made entirely of supported text/group items, the
+   reader now preserves source-authored formatting, hyperlinks, nesting,
+   text-level provenance and script values in the existing typed `ItemTree`
+   (see `docling_json::text_only_item_tree`). Re-export reads that tree,
+   not parsed Markdown; the flat stream continues to supply unchanged
+   Markdown behavior. Documents with tables/pictures/fields, separate
+   furniture, page maps, metadata, unsupported annotations or invalid
+   references deliberately retain the legacy path until the typed importer
+   can represent those fields without loss. This is **not** global JSON
+   round-trip parity. The earlier ~9% JSON→Markdown discrepancy was measured
+   before this bounded change and must be re-measured, not silently retired.
 
 3. **`strict` Markdown mode is Rust-only.** Default output reproduces docling's
    legacy quirks (`***x*** .` run-spacing, dropped code-fence languages, `\_` and
