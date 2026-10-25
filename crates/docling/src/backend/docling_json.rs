@@ -53,7 +53,234 @@ impl DeclarativeBackend for DoclingJsonBackend {
                 walk(c, &root, 0, &mut doc, &mut guard);
             }
         }
+        // Keep source-authored inline semantics in the existing typed tree when
+        // this JSON document is entirely representable by its text/group model.
+        // Other document kinds continue through the established flat path.
+        doc.tree = text_only_item_tree(&root);
         Ok(doc)
+    }
+}
+
+/// The JSON reader's flat nodes serve the legacy Markdown serializer, but
+/// their escaped Markdown text is *not* a faithful representation of source
+/// formatting and hyperlinks. For a purely textual Docling JSON input, keep
+/// the original typed item relationships in docling-core's existing ItemTree.
+/// This has an intentionally strict admission boundary: when a field, source
+/// type or graph shape cannot be represented without loss, use the legacy
+/// path rather than silently discard source semantics. No second JSON model.
+fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
+    use docling_core::tree::{Formatting, ItemTree, ListMeta, TreeKind, TreeProv};
+    use docling_core::{ContentLayer, Script};
+
+    for bucket in [
+        "tables", "pictures", "field_regions", "field_items",
+        "form_items", "key_value_items",
+    ] {
+        if root.get(bucket).is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty)) {
+            return None;
+        }
+    }
+    // The tree writer obtains page sizes from Node::PageInfo, which this
+    // reader does not yet recreate. Refuse to emit ungrounded page references.
+    if root.get("pages").is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty)) {
+        return None;
+    }
+    let texts = root.get("texts")?.as_array()?;
+    let groups = root.get("groups")?.as_array()?;
+    let body = root.get("body")?.get("children")?.as_array()?;
+    if texts.len().checked_add(groups.len())? > 10_000 {
+        return None;
+    }
+    let mut tree = ItemTree::default();
+    let layer_of = |item: &Value| -> Option<Option<ContentLayer>> {
+        Some(match item.get("content_layer").and_then(Value::as_str).unwrap_or("body") {
+            "body" => None,
+            "furniture" => Some(ContentLayer::Furniture),
+            "notes" => Some(ContentLayer::Notes),
+            "invisible" => Some(ContentLayer::Invisible),
+            _ => return None,
+        })
+    };
+    for (index, item) in texts.iter().enumerate() {
+        let o = item.as_object()?;
+        if o.keys().any(|k| !matches!(
+            k.as_str(),
+            "self_ref" | "parent" | "children" | "content_layer" | "label" |
+            "text" | "orig" | "formatting" | "hyperlink" | "level" |
+            "enumerated" | "marker" | "prov" | "comments" | "source"
+        )) {
+            return None;
+        }
+        let expected = format!("#/texts/{index}");
+        if item.get("self_ref").and_then(Value::as_str).is_some_and(|r| r != expected) {
+            return None;
+        }
+        if item.get("comments").is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+            || item.get("source").is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+        {
+            return None;
+        }
+        let label = item.get("label").and_then(Value::as_str).unwrap_or("text");
+        if !matches!(label, "text" | "paragraph" | "footnote" | "caption" |
+            "title" | "section_header" | "list_item") {
+            return None;
+        }
+        let text = item.get("text")?.as_str()?.to_owned();
+        let formatting = match item.get("formatting").filter(|v| !v.is_null()) {
+            Some(f) => {
+                let map = f.as_object()?;
+                if map.keys().any(|k| !matches!(
+                    k.as_str(), "bold" | "italic" | "underline" | "strikethrough" | "script"
+                )) {
+                    return None;
+                }
+                let flag = |k: &str| -> Option<bool> {
+                    match map.get(k) {
+                        Some(v) => v.as_bool(),
+                        None => Some(false),
+                    }
+                };
+                let script = match f.get("script").and_then(Value::as_str).unwrap_or("baseline") {
+                    "baseline" => Script::Baseline,
+                    "sub" => Script::Sub,
+                    "super" => Script::Super,
+                    _ => return None,
+                };
+                Some(Formatting {
+                    bold: flag("bold")?,
+                    italic: flag("italic")?,
+                    underline: flag("underline")?,
+                    strikethrough: flag("strikethrough")?,
+                    script,
+                })
+            }
+            None => None,
+        };
+        let list = if label == "list_item" {
+            Some(ListMeta {
+                enumerated: item.get("enumerated").and_then(Value::as_bool).unwrap_or(false),
+                marker: item.get("marker").and_then(Value::as_str).unwrap_or("").to_owned(),
+            })
+        } else {
+            None
+        };
+        let level = if label == "section_header" {
+            Some(u8::try_from(item.get("level")?.as_u64()?).ok()?)
+        } else {
+            None
+        };
+        let id = tree.add(None, layer_of(item)?, TreeKind::Text {
+            label: label.to_owned(),
+            text,
+            orig: item.get("orig").and_then(Value::as_str).map(str::to_owned),
+            formatting,
+            hyperlink: item.get("hyperlink").and_then(Value::as_str).map(str::to_owned),
+            level,
+            list,
+        });
+        if let Some(prov) = item.get("prov").filter(|v| !v.is_null()) {
+            let entries = prov.as_array()?;
+            if entries.len() > 1 {
+                return None;
+            }
+            if let Some(p) = entries.first() {
+                let bbox = p.get("bbox")?;
+                let number = |name: &str| -> Option<f64> {
+                    let n = bbox.get(name)?.as_f64()?;
+                    n.is_finite().then_some(n)
+                };
+                let span = p.get("charspan")?.as_array()?;
+                if span.len() != 2 {
+                    return None;
+                }
+                let origin = match bbox.get("coord_origin")?.as_str()? {
+                    "TOPLEFT" => false,
+                    "BOTTOMLEFT" => true,
+                    _ => return None,
+                };
+                tree.items[id].prov = Some(TreeProv {
+                    page_no: usize::try_from(p.get("page_no")?.as_u64()?).ok()?,
+                    bbox: [number("l")?, number("t")?, number("r")?, number("b")?],
+                    bottom_left: origin,
+                    charspan: [
+                        usize::try_from(span[0].as_u64()?).ok()?,
+                        usize::try_from(span[1].as_u64()?).ok()?,
+                    ],
+                });
+            }
+        }
+    }
+    for (index, item) in groups.iter().enumerate() {
+        let o = item.as_object()?;
+        if o.keys().any(|k| !matches!(
+            k.as_str(), "self_ref" | "parent" | "children" |
+            "content_layer" | "label" | "name"
+        )) {
+            return None;
+        }
+        let expected = format!("#/groups/{index}");
+        if item.get("self_ref").and_then(Value::as_str).is_some_and(|r| r != expected) {
+            return None;
+        }
+        let label = item.get("label")?.as_str()?;
+        if !matches!(label, "inline" | "section" | "unspecified" | "list" | "ordered_list") {
+            return None;
+        }
+        tree.add(None, layer_of(item)?, TreeKind::Group {
+            label: label.to_owned(),
+            name: item.get("name").and_then(Value::as_str).unwrap_or("group").to_owned(),
+        });
+    }
+    let resolve_id = |r: &Value| -> Option<usize> {
+        let s = r.get("$ref")?.as_str()?;
+        if let Some(n) = s.strip_prefix("#/texts/") {
+            let id: usize = n.parse().ok()?;
+            return (id < texts.len()).then_some(id);
+        }
+        let n: usize = s.strip_prefix("#/groups/")?.parse().ok()?;
+        (n < groups.len()).then_some(texts.len() + n)
+    };
+    for (id, raw) in texts.iter().chain(groups).enumerate() {
+        let children = raw.get("children").and_then(Value::as_array);
+        tree.items[id].children = children
+            .map(|cs| cs.iter().map(&resolve_id).collect::<Option<Vec<_>>>())
+            .transpose_option()?;
+    }
+    tree.body = body.iter().map(&resolve_id).collect::<Option<Vec<_>>>()?;
+    // Reject cycles, duplicate ownership, orphan items, and stale parent
+    // pointers. Never normalize a malformed graph into apparently valid JSON.
+    let mut seen = vec![false; tree.items.len()];
+    let mut stack: Vec<(usize, Option<usize>, usize)> =
+        tree.body.iter().copied().map(|id| (id, None, 0)).collect();
+    while let Some((id, parent, depth)) = stack.pop() {
+        if depth >= MAX_DEPTH || seen[id] {
+            return None;
+        }
+        seen[id] = true;
+        tree.items[id].parent = parent;
+        let raw = if id < texts.len() { &texts[id] } else { &groups[id - texts.len()] };
+        if let Some(declared) = raw.get("parent").and_then(|v| v.get("$ref")).and_then(Value::as_str) {
+            let expected = parent.map_or_else(|| "#/body".to_owned(), |p| {
+                if p < texts.len() { format!("#/texts/{p}") }
+                else { format!("#/groups/{}", p - texts.len()) }
+            });
+            if declared != expected {
+                return None;
+            }
+        }
+        stack.extend(tree.items[id].children.iter().copied().map(|child| (child, Some(id), depth + 1)));
+    }
+    seen.iter().all(|&s| s).then_some(tree)
+}
+
+/// Turn an optional array of references into an Option of collected indices.
+trait OptionalChildren<T> {
+    fn transpose_option(self) -> Option<Vec<T>>;
+}
+
+impl<T> OptionalChildren<T> for Option<Option<Vec<T>>> {
+    fn transpose_option(self) -> Option<Vec<T>> {
+        self.unwrap_or_else(|| Some(Vec::new()))
     }
 }
 
