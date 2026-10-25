@@ -80,6 +80,15 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
             return None;
         }
     }
+    // Retain all content layers, not just the body. The flat reader does not
+    // currently assemble a separate furniture tree.
+    if root.get("furniture")
+        .and_then(|v| v.get("children"))
+        .and_then(Value::as_array)
+        .is_some_and(|children| !children.is_empty())
+    {
+        return None;
+    }
     // The tree writer obtains page sizes from Node::PageInfo, which this
     // reader does not yet recreate. Refuse to emit ungrounded page references.
     if root.get("pages").is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty)) {
@@ -122,7 +131,7 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         }
         let label = item.get("label").and_then(Value::as_str).unwrap_or("text");
         if !matches!(label, "text" | "paragraph" | "footnote" | "caption" |
-            "title" | "section_header" | "list_item") {
+            "title" | "section_header" | "list_item" | "formula") {
             return None;
         }
         let text = item.get("text")?.as_str()?.to_owned();
@@ -241,10 +250,10 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         (n < groups.len()).then_some(texts.len() + n)
     };
     for (id, raw) in texts.iter().chain(groups).enumerate() {
-        let children = raw.get("children").and_then(Value::as_array);
-        tree.items[id].children = children
-            .map(|cs| cs.iter().map(&resolve_id).collect::<Option<Vec<_>>>())
-            .transpose_option()?;
+        tree.items[id].children = match raw.get("children") {
+            Some(v) => v.as_array()?.iter().map(&resolve_id).collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
     }
     tree.body = body.iter().map(&resolve_id).collect::<Option<Vec<_>>>()?;
     // Reject cycles, duplicate ownership, orphan items, and stale parent
@@ -271,17 +280,6 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         stack.extend(tree.items[id].children.iter().copied().map(|child| (child, Some(id), depth + 1)));
     }
     seen.iter().all(|&s| s).then_some(tree)
-}
-
-/// Turn an optional array of references into an Option of collected indices.
-trait OptionalChildren<T> {
-    fn transpose_option(self) -> Option<Vec<T>>;
-}
-
-impl<T> OptionalChildren<T> for Option<Option<Vec<T>>> {
-    fn transpose_option(self) -> Option<Vec<T>> {
-        self.unwrap_or_else(|| Some(Vec::new()))
-    }
 }
 
 /// Every table of the file against the cell budget (#861; docling-core
