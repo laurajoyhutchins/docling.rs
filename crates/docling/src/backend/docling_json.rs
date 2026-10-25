@@ -80,6 +80,13 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
             return None;
         }
     }
+    // Source-level metadata is not part of ItemTree, and the current JSON
+    // reader does not request metadata JSON output after loading it. This
+    // narrower typed path must never claim a lossless document round-trip
+    // for such input.
+    if root.get("metadata").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
     // Retain all content layers, not just the body. The flat reader does not
     // currently assemble a separate furniture tree.
     if root.get("furniture")
