@@ -1819,12 +1819,13 @@ These are deliberate or unavoidable divergences, not bugs.
    `JsonDocling` files made entirely of supported text/group items, the
    reader now preserves source-authored formatting, hyperlinks, nesting,
    text-level provenance and script values in the existing typed `ItemTree`
-   (see `docling_json::text_only_item_tree`). Re-export reads that tree,
+   (see `docling_json::text_only_item_tree`). Representable page sizes
+   travel through existing `Node::PageInfo` markers. Re-export reads the tree,
    not parsed Markdown; the flat stream continues to supply unchanged
    Markdown behavior. Documents with tables/pictures/fields, separate
-   furniture, page maps, metadata, unsupported annotations or invalid
-   references deliberately retain the legacy path until the typed importer
-   can represent those fields without loss. This is **not** global JSON
+   furniture, unrepresentable page maps or page images, metadata, unsupported
+   annotations or invalid references deliberately retain the legacy path
+   until the typed importer can represent those fields without loss. This is **not** global JSON
    round-trip parity. The earlier ~9% JSON→Markdown discrepancy was measured
    before this bounded change and must be re-measured, not silently retired.
 
