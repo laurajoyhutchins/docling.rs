@@ -1409,4 +1409,123 @@ mod tests {
             "got:\n{md}"
         );
     }
+
+    /// The source JSON's raw text and formatting are distinct facts. Rebuilding
+    /// them from Markdown would corrupt escaped links, bold/italic spans and
+    /// subscript semantics. Preserve them as typed ItemTree fields instead.
+    #[test]
+    fn text_only_inline_group_preserves_source_semantics_through_two_json_loads() {
+        let source = serde_json::json!({
+            "schema_name": "DoclingDocument",
+            "version": "1.10.0",
+            "name": "typed-inline",
+            "body": {"children": [
+                {"$ref": "#/groups/0"}, {"$ref": "#/texts/4"}
+            ]},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "Plain"
+                },
+                {
+                    "self_ref": "#/texts/1", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "R&D <safe>",
+                    "formatting": {"bold": true, "italic": true}
+                },
+                {
+                    "self_ref": "#/texts/2", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "A_B & C",
+                    "hyperlink": "https://example.org/r?x=1&y=a_b",
+                    "prov": [{
+                        "page_no": 1,
+                        "bbox": {"l": 2.5, "t": 3.0, "r": 8.25, "b": 10.0,
+                                 "coord_origin": "TOPLEFT"},
+                        "charspan": [0, 7]
+                    }]
+                },
+                {
+                    "self_ref": "#/texts/3", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "2",
+                    "formatting": {"script": "sub"}
+                },
+                {
+                    "self_ref": "#/texts/4", "parent": {"$ref": "#/body"},
+                    "children": [], "label": "formula", "text": "x_i+y",
+                    "orig": "x_i+y"
+                }
+            ],
+            "groups": [{
+                "self_ref": "#/groups/0", "parent": {"$ref": "#/body"},
+                "children": [
+                    {"$ref": "#/texts/0"}, {"$ref": "#/texts/1"},
+                    {"$ref": "#/texts/2"}, {"$ref": "#/texts/3"}
+                ], "name": "inline", "label": "inline"
+            }],
+            "tables": [], "pictures": [], "pages": {}
+        });
+
+        let read = |v: &serde_json::Value| {
+            DoclingJsonBackend.convert(&SourceDocument::from_bytes(
+                "inline.json", InputFormat::JsonDocling, v.to_string().into_bytes(),
+            )).unwrap()
+        };
+        let doc = read(&source);
+        assert!(doc.tree.is_some(), "a supported inline source needs a typed tree");
+        let before_markdown = doc.export_to_markdown();
+        let first = doc.export_to_json_value();
+
+        assert_eq!(first["texts"][1]["text"], "R&D <safe>");
+        assert_eq!(first["texts"][1]["orig"], "R&D <safe>");
+        assert_eq!(first["texts"][1]["formatting"]["bold"], true);
+        assert_eq!(first["texts"][1]["formatting"]["italic"], true);
+        assert_eq!(first["texts"][2]["text"], "A_B & C");
+        assert_eq!(first["texts"][2]["hyperlink"], "https://example.org/r?x=1&y=a_b");
+        assert_eq!(first["texts"][2]["prov"][0]["page_no"], 1);
+        assert_eq!(first["texts"][2]["prov"][0]["bbox"]["l"], 2.5);
+        assert_eq!(first["texts"][3]["formatting"]["script"], "sub");
+        assert_eq!(first["texts"][4]["label"], "formula");
+        assert_eq!(first["texts"][4]["orig"], "x_i+y");
+        assert_eq!(first["groups"][0]["label"], "inline");
+        assert_eq!(first["groups"][0]["children"].as_array().unwrap().len(), 4);
+        assert_eq!(first["body"]["children"][0]["$ref"], "#/groups/0");
+
+        let reread = read(&first);
+        assert!(reread.tree.is_some());
+        assert_eq!(reread.export_to_markdown(), before_markdown);
+        let second = reread.export_to_json_value();
+        assert_eq!(first["texts"], second["texts"]);
+        assert_eq!(first["groups"], second["groups"]);
+        assert_eq!(first["body"], second["body"]);
+    }
+
+    #[test]
+    fn invalid_or_unrepresentable_json_tree_never_fakes_a_typed_roundtrip() {
+        let base = serde_json::json!({
+            "schema_name": "DoclingDocument", "name": "bad",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [{
+                "self_ref": "#/texts/0", "parent": {"$ref": "#/body"},
+                "label": "text", "text": "Hello", "children": []
+            }],
+            "groups": [], "tables": [], "pictures": [], "pages": {}
+        });
+        let read = |v: &serde_json::Value| {
+            DoclingJsonBackend.convert(&SourceDocument::from_bytes(
+                "bad.json", InputFormat::JsonDocling, v.to_string().into_bytes(),
+            )).unwrap()
+        };
+        assert!(read(&base).tree.is_some());
+        let mut duplicated = base.clone();
+        duplicated["body"]["children"].as_array_mut().unwrap().push(
+            serde_json::json!({"$ref": "#/texts/0"}),
+        );
+        assert!(read(&duplicated).tree.is_none(), "duplicate refs are not a valid tree");
+        let mut unsupported = base.clone();
+        unsupported["texts"][0]["unsupported_annotation"] = serde_json::json!("cannot preserve");
+        assert!(read(&unsupported).tree.is_none(), "unknown source semantics must not vanish");
+        let mut with_pages = base.clone();
+        with_pages["pages"]["1"] = serde_json::json!({"size": {"width": 612, "height": 792}});
+        assert!(read(&with_pages).tree.is_none(), "page sizes must not be dropped");
+    }
+
 }
