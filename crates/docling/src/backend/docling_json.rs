@@ -1572,8 +1572,20 @@ mod tests {
         unsupported["texts"][0]["unsupported_annotation"] = serde_json::json!("cannot preserve");
         assert!(read(&unsupported).tree.is_none(), "unknown source semantics must not vanish");
         let mut with_pages = base.clone();
-        with_pages["pages"]["1"] = serde_json::json!({"size": {"width": 612, "height": 792}});
-        assert!(read(&with_pages).tree.is_none(), "page sizes must not be dropped");
+        with_pages["pages"]["1"] = serde_json::json!({
+            "page_no": 1, "size": {"width": 612.0, "height": 792.0}
+        });
+        let loaded = read(&with_pages);
+        assert!(loaded.tree.is_some(), "representable page sizes should be retained");
+        let round_trip = loaded.export_to_json_value();
+        assert_eq!(round_trip["pages"]["1"]["page_no"], 1);
+        assert_eq!(round_trip["pages"]["1"]["size"]["width"], 612.0);
+        assert_eq!(round_trip["pages"]["1"]["size"]["height"], 792.0);
+        let mut unsafe_page = with_pages;
+        unsafe_page["pages"]["1"]["image"] = serde_json::json!({
+            "uri": "data:image/png;base64,AAAA"
+        });
+        assert!(read(&unsafe_page).tree.is_none(), "page image evidence must not be dropped");
     }
 
 }
