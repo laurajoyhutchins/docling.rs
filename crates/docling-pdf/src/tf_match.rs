@@ -329,18 +329,40 @@ fn deduplicate_cells(
     (new_table_cells, new_matches)
 }
 
-/// Step 8: `_do_final_asignment` — each word keeps only its highest-scoring
-/// match (Python's `max` keeps the first of equals).
-fn do_final_assignment(ioc_matches: &Matches) -> Matches {
+/// Step 8: prefer the highest-scoring overlap, as docling does, *unless*
+/// two distinct logical cells have exactly the same evidence for a word.
+/// Python's `max` silently chooses the first equal score. That makes cell
+/// ownership depend on iteration order for a genuinely ambiguous source
+/// observation. Leave only those cross-slot ties unplaced so the caller's
+/// existing invisible evidence layer retains the word and its source box.
+/// Ties between duplicate predictions of the *same* grid slot are harmless.
+fn do_final_assignment(ioc_matches: &Matches, table_cells: &[TfCell]) -> Matches {
+    let slot_for: BTreeMap<usize, (usize, usize)> = table_cells
+        .iter()
+        .map(|c| (c.cell_id, (c.row_id, c.column_id)))
+        .collect();
     let mut new_matches: Matches = BTreeMap::new();
     for (&pdf_id, list) in ioc_matches {
-        let mut best = &list[0];
+        let Some(mut best) = list.first() else {
+            continue;
+        };
         for m in &list[1..] {
             if m.score > best.score {
                 best = m;
             }
         }
-        new_matches.insert(pdf_id, vec![best.clone()]);
+        let best_slot = slot_for.get(&best.table_cell_id);
+        // An absent slot is not evidence of equivalence. This check applies
+        // only to exact ties; a genuine stronger overlap is still assigned.
+        let ambiguous = list.iter().any(|other| {
+            other.table_cell_id != best.table_cell_id
+                && other.score == best.score
+                && (best_slot.is_none()
+                    || slot_for.get(&other.table_cell_id) != best_slot)
+        });
+        if !ambiguous {
+            new_matches.insert(pdf_id, vec![best.clone()]);
+        }
     }
     new_matches
 }
@@ -605,7 +627,7 @@ pub fn match_and_post_process_with_unplaced(
     let (dedupl_cells, dedupl_matches) = deduplicate_cells(tab_columns, &fixed, &matches, &ioc);
 
     // Step 8: one table cell per word.
-    let final_matches = do_final_assignment(&dedupl_matches);
+    let final_matches = do_final_assignment(&dedupl_matches, &dedupl_cells);
 
     // Step 8.a: align cell boxes to their matched words (dropping unmatched
     // cells) — skipped for large pages, as in the source.
@@ -706,6 +728,68 @@ mod tests {
         let words = [word(5, "assigned", 400.0, 100.0)];
         let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
         assert_eq!(result[&5], vec![original]);
+    }
+
+    #[test]
+    fn exact_cross_column_tie_does_not_invent_cell_ownership() {
+        let predicted = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let candidates = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.5,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
+        let assigned = do_final_assignment(&candidates, &predicted);
+        assert!(!assigned.contains_key(&7), "cross-column tie is not a fact");
+    }
+
+    #[test]
+    fn unique_stronger_cell_still_owns_its_word() {
+        let predicted = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let candidates = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.51,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
+        let assigned = do_final_assignment(&candidates, &predicted);
+        assert_eq!(assigned[&7][0].table_cell_id, 0);
+    }
+
+    #[test]
+    fn duplicate_predictions_of_one_grid_slot_do_not_hide_source_text() {
+        let mut duplicate = cell(1, 0, 10.0);
+        duplicate.row_id = 0;
+        let predicted = vec![cell(0, 0, 10.0), duplicate];
+        let candidates = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.5,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
+        let assigned = do_final_assignment(&candidates, &predicted);
+        assert_eq!(assigned[&7][0].table_cell_id, 0);
     }
 
     #[test]
