@@ -385,7 +385,9 @@ fn validate_word_partition(
             return Err(format!("source word id {id} both assigned and unplaced"));
         }
         if word.text != source.text || word.bbox != source.bbox.map(|v| v as f32) {
-            return Err(format!("unplaced source word id {id} lost original evidence"));
+            return Err(format!(
+                "unplaced source word id {id} lost original evidence"
+            ));
         }
     }
     if accounted.len() != sources.len() {
@@ -494,10 +496,16 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         ))
     });
     let Some((num_rows, num_cols)) = dimensions else {
-        return Some(rejected_table_grid(&table_words, "predicted grid span overflow"));
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted grid span overflow",
+        ));
     };
     if !grid_within_budget(num_rows, num_cols) {
-        return Some(rejected_table_grid(&table_words, "predicted grid exceeds cell budget"));
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted grid exceeds cell budget",
+        ));
     }
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
     let mut out_cells = Vec::with_capacity(cells.len());
@@ -713,22 +721,30 @@ fn docling_match_rows(
             m.start_col.checked_add(m.col_span),
             m.start_row.checked_add(m.row_span),
         ) else {
-            return Some(rejected_table_grid(table_words, "matched grid span overflow"));
+            return Some(rejected_table_grid(
+                table_words,
+                "matched grid span overflow",
+            ));
         };
         num_cols = num_cols.max(col_end);
         num_rows = num_rows.max(row_end);
     }
     if !grid_within_budget(num_rows, num_cols) {
-        return Some(rejected_table_grid(table_words, "matched grid exceeds cell budget"));
+        return Some(rejected_table_grid(
+            table_words,
+            "matched grid exceeds cell budget",
+        ));
     }
     let cell_assignments: Vec<Vec<usize>> =
         merged.iter().map(|cell| cell.word_ids.clone()).collect();
     let assigned_ids: Vec<usize> = cell_assignments.iter().flatten().copied().collect();
     if assigned_ids.iter().any(|&id| id >= words.len()) {
-        return Some(rejected_table_grid(table_words, "matched source id outside page"));
+        return Some(rejected_table_grid(
+            table_words,
+            "matched source id outside page",
+        ));
     }
-    let assigned_set: std::collections::HashSet<usize> =
-        assigned_ids.iter().copied().collect();
+    let assigned_set: std::collections::HashSet<usize> = assigned_ids.iter().copied().collect();
     let unplaced = table_words
         .iter()
         .filter(|word| !assigned_set.contains(&word.id))
@@ -973,7 +989,10 @@ mod tests {
             },
         ];
         let admitted = admit_table_grid(input, &source, &[vec![31], vec![47]]);
-        assert!(admitted.cells.is_empty(), "do not invent source cell ownership");
+        assert!(
+            admitted.cells.is_empty(),
+            "do not invent source cell ownership"
+        );
         assert!(admitted.rows.is_empty(), "do not present an inferred table");
         assert_eq!(admitted.unplaced.len(), 2);
         assert_eq!(admitted.unplaced[0].source_cell_id, 31);
