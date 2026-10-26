@@ -41,7 +41,7 @@ def walk(document: dict) -> list[dict]:
     seen = set()
     rows = []
 
-    def follow(pointer: str, ancestors: tuple[str, ...]):
+    def follow(pointer: str, ancestors: tuple[str, ...], position: tuple[int, ...]):
         match = REF.fullmatch(pointer)
         if not match:
             raise ValueError(f"malformed item reference: {pointer}")
@@ -69,6 +69,10 @@ def walk(document: dict) -> list[dict]:
             "label": label,
             "text": text,
             "parent_labels": list(ancestors),
+            # Path of ordinal child positions, not unstable allocation IDs.
+            # This distinguishes a footnote moved between two same-depth
+            # groups or tables, even if its text and class stay unchanged.
+            "owner_path": list(position[:-1]),
             "table_shape": [grid.get("num_rows"), grid.get("num_cols")]
             if bucket == "tables" and isinstance(grid, dict) else None,
             "page": (item.get("prov") or [{}])[0].get("page_no"),
@@ -78,15 +82,15 @@ def walk(document: dict) -> list[dict]:
             # Docling pictures and other elements can own nested text,
             # too. Follow them rather than flattening their contents away.
             pass
-        for child in children:
+        for child_index, child in enumerate(children):
             if not isinstance(child, dict) or not isinstance(child.get("$ref"), str):
                 raise ValueError(f"invalid child of {pointer}")
-            follow(child["$ref"], (*ancestors, pointer))
+            follow(child["$ref"], (*ancestors, pointer), (*position, child_index))
 
-    for child in document["body"]["children"]:
+    for child_index, child in enumerate(document["body"]["children"]):
         if not isinstance(child, dict) or not isinstance(child.get("$ref"), str):
             raise ValueError("invalid body child reference")
-        follow(child["$ref"], ())
+        follow(child["$ref"], (), (child_index,))
     return rows
 
 
@@ -97,7 +101,7 @@ def shape_counts(rows: list[dict]) -> dict:
 def signature(row: dict) -> tuple:
     """Ignore allocation index; retain visible identity and ownership depth."""
     return (row["bucket"], row["label"], row["text"],
-            len(row["parent_labels"]), tuple(row["table_shape"] or ()))
+            tuple(row["owner_path"]), tuple(row["table_shape"] or ()))
 
 
 def summarize(reference: dict, actual: dict) -> dict:
