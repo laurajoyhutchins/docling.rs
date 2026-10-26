@@ -123,6 +123,13 @@ jobs:
           scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib assembled_container_groups_preserve_children_and_plain_markdown
           scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib form_children_stay_together_in_reading_order
 
+      - name: Verify pixel renderer diagnostic
+        # The model-backed source-fidelity run still follows below. This
+        # small unit gate protects the independent RGB metric against incorrect
+        # channel denominators and unequal-size false positives.
+        shell: bash
+        run: scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --example renderer_diff
+
       - name: Snapshot conformance
         env:
           PDF_CONFORMANCE_OUT: ${{ runner.temp }}/snapshots
