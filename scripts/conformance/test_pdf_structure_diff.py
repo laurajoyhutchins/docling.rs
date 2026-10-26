@@ -75,6 +75,24 @@ class PdfStructureTests(unittest.TestCase):
         self.assertNotEqual(owner(before), owner(after))
         self.assertFalse(mod.summarize(original, changed)["structurally_equal"])
 
+    def test_geometry_moves_are_reported_without_faking_label_changes(self):
+        original = document()
+        original["texts"][0]["prov"] = [{
+            "page_no": 1, "bbox": {
+                "l": 10.0, "t": 15.0, "r": 50.0, "b": 25.0,
+                "coord_origin": "TOPLEFT",
+            },
+        }]
+        changed = copy.deepcopy(original)
+        changed["texts"][0]["prov"][0]["bbox"]["l"] = 13.0
+        result = mod.summarize(original, changed)
+        self.assertTrue(result["structurally_equal"])
+        self.assertEqual(len(result["geometry_changes"]), 1)
+        self.assertEqual(result["geometry_changes"][0]["reference_page"], 1)
+        self.assertEqual(result["geometry_changes"][0]["reference_bbox"]["l"], 10.0)
+        self.assertEqual(result["geometry_changes"][0]["actual_bbox"]["l"], 13.0)
+        self.assertEqual(result["classifications"], [])
+
     def test_dangling_reference_fails_closed(self):
         broken = document()
         broken["groups"][0]["children"][0] = {"$ref": "#/texts/999"}
