@@ -171,6 +171,21 @@ def main(argv=None) -> int:
         "structurally_equal": result["structurally_equal"],
         "report": str(args.out),
     }))
+    # Print bounded, source-identifiable differences in the owner repository's
+    # CLI. External GCP verification executes this tool without parsing its
+    # internal JSON report or creating an undocumented cross-repo contract.
+    for difference in result["ordered_differences"][:4]:
+        print("STRUCTURAL_DIAGNOSTIC " + json.dumps({
+            "change": difference["change"],
+            "reference_range": difference["reference_range"],
+            "actual_range": difference["actual_range"],
+            "reference": [{**item, "text": item["text"][:80]}
+                          for item in difference["reference"]],
+            "actual": [{**item, "text": item["text"][:80]}
+                       for item in difference["actual"]],
+        }, ensure_ascii=False))
+    for assignment in result["classifications"][:4]:
+        print("CLASSIFICATION_DIAGNOSTIC " + json.dumps(assignment, ensure_ascii=False))
     return 1 if args.require_parity and not result["structurally_equal"] else 0
 
 
