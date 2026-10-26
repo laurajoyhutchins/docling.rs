@@ -555,8 +555,30 @@ fn docling_match_rows(
             }
         }
     }
+    // The matcher can deliberately abstain when no logical cell has enough
+    // evidence to own a source word. A false `None` here would discard the
+    // unmatched source words and invite the downstream geometric fallback
+    // to make up a new table. Carry the original text and boxes on the
+    // standard invisible evidence layer even if no table grid survives.
+    let unplaced: Vec<crate::assemble::UnplacedTableWord> = unplaced
+        .into_iter()
+        .map(|w| crate::assemble::UnplacedTableWord {
+            source_cell_id: w.id,
+            text: w.text,
+            bbox: [
+                (w.bbox[0] / SCALE) as f32,
+                (w.bbox[1] / SCALE) as f32,
+                (w.bbox[2] / SCALE) as f32,
+                (w.bbox[3] / SCALE) as f32,
+            ],
+        })
+        .collect();
     if merged.is_empty() {
-        return None;
+        return Some(TableGrid {
+            rows: Vec::new(),
+            cells: Vec::new(),
+            unplaced,
+        });
     }
 
     // `multi_table_predict`'s sort_row_col_indexes: compress the surviving
@@ -609,19 +631,7 @@ fn docling_match_rows(
     Some(TableGrid {
         rows: grid,
         cells: out_cells,
-        unplaced: unplaced
-            .into_iter()
-            .map(|w| crate::assemble::UnplacedTableWord {
-                source_cell_id: w.id,
-                text: w.text,
-                bbox: [
-                    (w.bbox[0] / SCALE) as f32,
-                    (w.bbox[1] / SCALE) as f32,
-                    (w.bbox[2] / SCALE) as f32,
-                    (w.bbox[3] / SCALE) as f32,
-                ],
-            })
-            .collect(),
+        unplaced,
     })
 }
 
