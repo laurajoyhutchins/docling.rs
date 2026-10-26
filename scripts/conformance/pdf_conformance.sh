@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate PDF output for the test corpus and diff it against the committed
-# snapshot baseline (tests/snapshots/). The pipeline is deterministic, so a
-# clean checkout should report every fixture EXACT; a non-zero diff means the
-# output drifted. Run scripts/install/pdf_setup.sh first to fetch the libs/models.
+# snapshot baseline (tests/snapshots/). Run model inference with the pinned
+# single-thread baseline: otherwise ONNX floating-point reductions can cause
+# run-to-run table-cell changes, indistinguishable from code regressions. Run scripts/install/pdf_setup.sh first to fetch the libs/models.
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # docling.rs/
 
@@ -10,6 +10,8 @@ cd "$(dirname "$0")/../.."   # docling.rs/
 # committed snapshots were generated with it; the SIMD default differs by
 # ±1/255 per pixel, enough to flip borderline table cells).
 export DOCLING_RS_SLOW_RESIZE="${DOCLING_RS_SLOW_RESIZE:-1}"
+export DOCLING_RS_PDF_THREADS=1
+export DOCLING_RS_FP32=1
 export DOCLING_LAYOUT_ONNX="${DOCLING_LAYOUT_ONNX:-$(pwd)/.models/layout_heron.onnx}"
 export DOCLING_OCR_REC_ONNX="${DOCLING_OCR_REC_ONNX:-$(pwd)/.models/ocr_rec.onnx}"
 export DOCLING_OCR_DICT="${DOCLING_OCR_DICT:-$(pwd)/.models/ppocr_keys_v1.txt}"
