@@ -10,34 +10,8 @@
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.."
 
-# Pin the snapshot-baseline pixel path: the scalar image-crate resize (the
-# committed snapshots were generated with it; the SIMD default differs by
-# ±1/255 per pixel, enough to flip borderline table cells).
-export DOCLING_RS_SLOW_RESIZE="${DOCLING_RS_SLOW_RESIZE:-1}"
-export DOCLING_LAYOUT_ONNX="${DOCLING_LAYOUT_ONNX:-$(pwd)/.models/layout_heron.onnx}"
-export DOCLING_OCR_REC_ONNX="${DOCLING_OCR_REC_ONNX:-$(pwd)/.models/ocr_rec.onnx}"
-export DOCLING_OCR_DICT="${DOCLING_OCR_DICT:-$(pwd)/.models/ppocr_keys_v1.txt}"
-# The text detector (#429) is part of the OCR baseline: without it bitmap
-# pages lose every line the layout model gave no region, and the image /
-# figure snapshots change.
-export DOCLING_OCR_DET_ONNX="${DOCLING_OCR_DET_ONNX:-$(pwd)/.models/ocr_det.onnx}"
-# Optional: falls back to geometric table reconstruction if missing.
-export DOCLING_TABLEFORMER_ENCODER="${DOCLING_TABLEFORMER_ENCODER:-$(pwd)/.models/tableformer/encoder.onnx}"
-export DOCLING_TABLEFORMER_DECODER="${DOCLING_TABLEFORMER_DECODER:-$(pwd)/.models/tableformer/decoder.onnx}"
-export DOCLING_TABLEFORMER_BBOX="${DOCLING_TABLEFORMER_BBOX:-$(pwd)/.models/tableformer/bbox.onnx}"
-# The model inputs are rendered by docling-parse's renderer (#478), like the
-# docling that wrote the groundtruth (its default backend since 2.123). The
-# baselines are that renderer's, so its absence is an error here, not the
-# quiet Rust-renderer fallback the `auto` default gives a plain checkout; run
-# with DOCLING_RS_RENDERER=rust (or pdfium) to score that path against the
-# same files.
-export DOCLING_RS_RENDERER="${DOCLING_RS_RENDERER:-docling-parse}"
-export DOCLING_PARSE_RENDER_LIB="${DOCLING_PARSE_RENDER_LIB:-$(pwd)/.docling-parse/lib}"
-if [ "$DOCLING_RS_RENDERER" = docling-parse ]; then
-  for f in "$DOCLING_PARSE_RENDER_LIB"/libdparse_render.*; do
-    [ -e "$f" ] || { echo "MISSING: $DOCLING_PARSE_RENDER_LIB/libdparse_render.so  (run scripts/install/build_docling_parse_render.sh, or DOCLING_RS_RENDERER=rust)"; exit 1; }
-  done
-fi
+source scripts/conformance/pdf_env.sh
+docling_pdf_conformance_env
 
 cargo build --release --quiet -p docling-cli
 BIN=./target/release/docling-rs
