@@ -3642,7 +3642,7 @@ pub fn assemble_page(
                     g.rows.is_empty() && g.cells.is_empty()
                 });
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
-                    Some(grid) if rejected_table => (Vec::new(), None, None),
+                    Some(_) if rejected_table => (Vec::new(), None, None),
                     Some(grid) => {
                         let nrows = grid.rows.len();
                         let ncols = grid.rows.first().map_or(0, Vec::len);
