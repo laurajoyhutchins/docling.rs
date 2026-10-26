@@ -82,6 +82,35 @@ class SemanticTableTests(unittest.TestCase):
             {"equals": "OTSL"}, {"equals": "0.965"},
         ]))
 
+    def test_otsl_html_paired_values_are_one_cell_per_metric(self):
+        # The pinned Python Docling reference and the original HPO table
+        # express two method results within each *single* metric cell.
+        # Demand the correct ordered metric cells, not a fabricated extra
+        # column for every OTSL/HTML scalar.
+        cells = [
+            cell("6", 2, 0), cell("6", 2, 1),
+            cell("OTSL HTML", 2, 2),
+            cell("0.965 0.969", 2, 3),
+            cell("0.934 0.927", 2, 4),
+            cell("0.955 0.955", 2, 5),
+            cell("0.88 0.857", 2, 6),
+            cell("2.73 5.39", 2, 7),
+        ]
+        expected = [
+            {"equals": "6"}, {"equals": "6"},
+            {"equals": "OTSL HTML"},
+            {"equals": "0.965 0.969"}, {"equals": "0.934 0.927"},
+            {"equals": "0.955 0.955"}, {"equals": "0.88 0.857"},
+            {"equals": "2.73 5.39"},
+        ]
+        self.assertTrue(audit.one_row_binding(cells, expected))
+        self.assertFalse(audit.one_row_binding(cells, [
+            {"equals": "OTSL"}, {"equals": "0.965"},
+        ]))
+        # A transposition changes the paired metric's column ownership.
+        cells[4]["text"], cells[5]["text"] = cells[5]["text"], cells[4]["text"]
+        self.assertFalse(audit.one_row_binding(cells, expected))
+
     def test_decimal_point_is_semantically_significant(self):
         self.assertNotEqual(audit.normalized("0.965"), audit.normalized("0 965"))
         self.assertEqual(audit.normalized("Notices . . . vii"), "notices vii")
