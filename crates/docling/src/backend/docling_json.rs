@@ -169,7 +169,14 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
             return None;
         }
         let expected = format!("#/texts/{index}");
-        if item.get("self_ref").and_then(Value::as_str).is_some_and(|r| r != expected) {
+        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(&expected)) {
+            return None;
+        }
+        // Ill-typed present fields are not equivalent to absent fields: a
+        // typed export must never erase authored link targets or run text.
+        if ["orig", "hyperlink"].iter().any(|field| {
+            item.get(*field).is_some_and(|value| !value.is_null() && !value.is_string())
+        }) {
             return None;
         }
         if item.get("comments").is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
@@ -197,10 +204,11 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
                         None => Some(false),
                     }
                 };
-                let script = match f.get("script").and_then(Value::as_str).unwrap_or("baseline") {
-                    "baseline" => Script::Baseline,
-                    "sub" => Script::Sub,
-                    "super" => Script::Super,
+                let script = match f.get("script") {
+                    None | Some(Value::Null) => Script::Baseline,
+                    Some(Value::String(s)) if s == "baseline" => Script::Baseline,
+                    Some(Value::String(s)) if s == "sub" => Script::Sub,
+                    Some(Value::String(s)) if s == "super" => Script::Super,
                     _ => return None,
                 };
                 Some(Formatting {
@@ -276,7 +284,10 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
             return None;
         }
         let expected = format!("#/groups/{index}");
-        if item.get("self_ref").and_then(Value::as_str).is_some_and(|r| r != expected) {
+        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(&expected)) {
+            return None;
+        }
+        if item.get("name").is_some_and(|v| !v.is_string()) {
             return None;
         }
         let label = item.get("label")?.as_str()?;
@@ -316,7 +327,8 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         seen[id] = true;
         tree.items[id].parent = parent;
         let raw = if id < texts.len() { &texts[id] } else { &groups[id - texts.len()] };
-        if let Some(declared) = raw.get("parent").and_then(|v| v.get("$ref")).and_then(Value::as_str) {
+        if let Some(declared_parent) = raw.get("parent") {
+            let declared = declared_parent.get("$ref")?.as_str()?;
             let expected = parent.map_or_else(|| "#/body".to_owned(), |p| {
                 if p < texts.len() { format!("#/texts/{p}") }
                 else { format!("#/groups/{}", p - texts.len()) }
@@ -1599,7 +1611,7 @@ mod tests {
             let read = |value: &serde_json::Value| {
                 DoclingJsonBackend
                     .convert(&SourceDocument::from_bytes(
-                        format!("{name}.json"),
+                        "inline.json",
                         InputFormat::JsonDocling,
                         value.to_string().into_bytes(),
                     ))
