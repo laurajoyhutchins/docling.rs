@@ -2699,7 +2699,7 @@ fn crop_region(page: &PdfPage, region: &Region, scale: Option<f32>) -> Option<Pi
     }
 }
 
-/// A `text` region that *says* it is a caption — `Table 5: …`, `Figure 2.
+/// A `text` or `section_header` region that *says* it is a caption — `Table 5: …`, `Figure 2.
 /// …`, `Fig. 3: …` — and sits right next to a graphic in reading order is one
 /// (a docling.rs extension, `docs/PDF_CONFORMANCE.md`): the layout model
 /// labels a long caption block `text` now and then (2206.01062's four-line
@@ -2718,7 +2718,9 @@ fn promote_labelled_captions(regions: &mut [Region], cells: &[TextCell]) {
     let mut promote = Vec::new();
     for (pos, &i) in body.iter().enumerate() {
         let r = &regions[i];
-        if r.label != "text" || !is_caption_label(&region_text(r, cells)) {
+        if !matches!(r.label, "text" | "section_header")
+            || !is_caption_label(&region_text(r, cells))
+        {
             continue;
         }
         let beside = |g: &Region| {
