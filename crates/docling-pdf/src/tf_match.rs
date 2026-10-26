@@ -361,8 +361,7 @@ fn do_final_assignment(
         let ambiguous = list.iter().any(|other| {
             other.table_cell_id != best.table_cell_id
                 && other.score == best.score
-                && (best_slot.is_none()
-                    || slot_for.get(&other.table_cell_id) != best_slot)
+                && (best_slot.is_none() || slot_for.get(&other.table_cell_id) != best_slot)
         });
         if ambiguous {
             ambiguous_words.insert(pdf_id);
@@ -640,8 +639,7 @@ pub fn match_and_post_process_with_unplaced(
     let (dedupl_cells, dedupl_matches) = deduplicate_cells(tab_columns, &fixed, &matches, &ioc);
 
     // Step 8: one table cell per word.
-    let (final_matches, ambiguous_words) =
-        do_final_assignment(&dedupl_matches, &dedupl_cells);
+    let (final_matches, ambiguous_words) = do_final_assignment(&dedupl_matches, &dedupl_cells);
 
     // Step 8.a: align cell boxes to their matched words (dropping unmatched
     // cells) — skipped for large pages, as in the source.
@@ -715,15 +713,8 @@ mod tests {
             word(3, "below rows", 130.0, 90.0),
             word(4, "outside both", 300.0, 90.0),
         ];
-        let (matches, cells, _) = pick_orphan_cells(
-            1,
-            2,
-            1,
-            cells,
-            &words,
-            Matches::new(),
-            &Default::default(),
-        );
+        let (matches, cells, _) =
+            pick_orphan_cells(1, 2, 1, cells, &words, Matches::new(), &Default::default());
         assert_eq!(matches.len(), 1, "grid owns only a two-axis match");
         assert!(matches.contains_key(&1));
         for id in [2, 3, 4] {
@@ -736,15 +727,8 @@ mod tests {
     #[test]
     fn orphan_without_any_geometric_anchor_remains_explicitly_unrecoverable() {
         let words = [word(1, "unknown location", 400.0, 100.0)];
-        let (matches, cells, _) = pick_orphan_cells(
-            1,
-            1,
-            0,
-            vec![],
-            &words,
-            Matches::new(),
-            &Default::default(),
-        );
+        let (matches, cells, _) =
+            pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new(), &Default::default());
         assert!(matches.is_empty(), "do not invent a table grid");
         assert!(cells.is_empty());
     }
@@ -787,7 +771,10 @@ mod tests {
         )]);
         let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
         assert!(!assigned.contains_key(&7), "cross-column tie is not a fact");
-        assert!(ambiguous.contains(&7), "retain the explicit no-ownership evidence");
+        assert!(
+            ambiguous.contains(&7),
+            "retain the explicit no-ownership evidence"
+        );
     }
 
     #[test]
