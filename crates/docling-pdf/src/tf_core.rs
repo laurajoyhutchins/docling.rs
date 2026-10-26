@@ -574,6 +574,9 @@ fn docling_match_rows(
         })
         .collect();
     if merged.is_empty() {
+        if unplaced.is_empty() {
+            return None;
+        }
         return Some(TableGrid {
             rows: Vec::new(),
             cells: Vec::new(),
