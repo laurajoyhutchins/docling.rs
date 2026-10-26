@@ -405,6 +405,7 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         rows: grid,
         cells: out_cells,
         unplaced: Vec::new(),
+        ambiguous: Vec::new(),
     })
 }
 
@@ -507,8 +508,8 @@ fn docling_match_rows(
         dump_match_inputs(&dir, &tf_cells, &scaled_words);
     }
 
-    let (cells_wo, final_matches, unplaced) =
-        crate::tf_match::match_and_post_process_with_unplaced(tf_cells, &scaled_words);
+    let (cells_wo, final_matches, unplaced, ties) =
+        crate::tf_match::match_and_post_process_with_evidence(tf_cells, &scaled_words);
 
     // `_merge_tf_output`: group per (column, row) in ascending-pdf-id order; the
     // first word's table cell fixes the group's offsets and spans.
@@ -573,6 +574,27 @@ fn docling_match_rows(
             ],
         })
         .collect();
+    // Capture cross-slot overlap ties without removing the selected word
+    // from its visible cell. IDs and scores refer to original model predictions.
+    let ambiguous: Vec<crate::assemble::AmbiguousTableWord> = ties
+        .into_iter()
+        .filter_map(|tie| {
+            let word = scaled_words.iter().find(|w| w.id == tie.pdf_id)?;
+            Some(crate::assemble::AmbiguousTableWord {
+                source_cell_id: word.id,
+                text: word.text.clone(),
+                bbox: [
+                    (word.bbox[0] / SCALE) as f32,
+                    (word.bbox[1] / SCALE) as f32,
+                    (word.bbox[2] / SCALE) as f32,
+                    (word.bbox[3] / SCALE) as f32,
+                ],
+                selected_cell_id: tie.chosen_cell_id,
+                competing_cell_ids: tie.competing_cell_ids,
+                overlap_score: tie.score,
+            })
+        })
+        .collect();
     if merged.is_empty() {
         if unplaced.is_empty() {
             return None;
@@ -581,6 +603,7 @@ fn docling_match_rows(
             rows: Vec::new(),
             cells: Vec::new(),
             unplaced,
+            ambiguous,
         });
     }
 
@@ -635,6 +658,7 @@ fn docling_match_rows(
         rows: grid,
         cells: out_cells,
         unplaced,
+        ambiguous,
     })
 }
 
