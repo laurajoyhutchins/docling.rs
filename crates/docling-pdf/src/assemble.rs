@@ -2719,13 +2719,23 @@ fn promote_labelled_captions(regions: &mut [Region], cells: &[TextCell]) {
     let mut promote = Vec::new();
     for (pos, &i) in body.iter().enumerate() {
         let r = &regions[i];
+        let label_text = region_text(r, cells);
         if (r.label != "text" && r.label != "section_header")
-            || !is_caption_label(&region_text(r, cells))
+            || !is_caption_label(&label_text)
         {
             continue;
         }
         let beside = |g: &Region| {
-            is_graphic(g.label) && g.r.min(r.r) - g.l.max(r.l) > 0.0 && {
+            // A section heading adjacent to a picture or code item must not
+            // become that graphic's caption solely because it begins with a
+            // number. The independently checked PDF case proves a *table*
+            // caption next to a table, not a generic heading→graphic link.
+            let compatible = if r.label == "section_header" {
+                is_table_like(g.label) && label_text.trim_start().starts_with("Table ")
+            } else {
+                is_graphic(g.label)
+            };
+            compatible && g.r.min(r.r) - g.l.max(r.l) > 0.0 && {
                 let gap = if r.t >= g.b {
                     r.t - g.b
                 } else if g.t >= r.b {
@@ -4530,6 +4540,25 @@ mod tests {
         ];
         super::promote_labelled_captions(&mut distant, &cells);
         assert_eq!(distant[0].label, "section_header");
+
+        // Source-shaped label alone is not authority: a table heading next
+        // to a picture may be a real section heading and must stay one.
+        let mut beside_picture = vec![
+            caption.clone(),
+            region("picture", 0.99, 50.0, 419.0, 460.0, 515.0),
+        ];
+        super::promote_labelled_captions(&mut beside_picture, &cells);
+        assert_eq!(beside_picture[0].label, "section_header");
+
+        // Nor may a figure-labelled heading be reclassified as a caption
+        // belonging to the neighbouring table.
+        let figure_cells = vec![cell("Figure 1. Overview", 50.0, 390.0, 330.0, 402.0)];
+        let mut beside_table = vec![
+            caption,
+            region("table", 0.99, 50.0, 419.0, 460.0, 515.0),
+        ];
+        super::promote_labelled_captions(&mut beside_table, &figure_cells);
+        assert_eq!(beside_table[0].label, "section_header");
     }
 
     /// Side-by-side figures (`tests/snapshots/latex/…/swa.pdf`): three
