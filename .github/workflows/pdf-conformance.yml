@@ -16,12 +16,16 @@ name: PDF conformance
 # and the fp32 models, and ONNX Runtime's CPU kernels agree across x86_64
 # runners. Should this job ever drift on master alone — a borderline table
 # cell flipping with the runner's CPU, not with any PR — refresh the baseline
-# from the artifact, or mark the job `continue-on-error` until it settles.
+# from the artifact only after independently confirming the drift cause; never silently bypass the gate.
 
 on:
   pull_request:
     paths:
       - "crates/docling-pdf/**"
+      - "crates/docling/src/**"
+      - "crates/docling-cli/src/**"
+      - "crates/docling/Cargo.toml"
+      - "crates/docling-cli/Cargo.toml"
       - "crates/docling-core/src/**"
       - "crates/docling-onnx/**"
       - "tests/snapshots/**"
@@ -29,11 +33,16 @@ on:
       - "scripts/conformance/**"
       - "scripts/install/download_dependencies.sh"
       - "Cargo.lock"
+      - "Cargo.toml"
       - ".github/workflows/pdf-conformance.yml"
   push:
     branches: [master]
     paths:
       - "crates/docling-pdf/**"
+      - "crates/docling/src/**"
+      - "crates/docling-cli/src/**"
+      - "crates/docling/Cargo.toml"
+      - "crates/docling-cli/Cargo.toml"
       - "crates/docling-core/src/**"
       - "crates/docling-onnx/**"
       - "tests/snapshots/**"
@@ -41,6 +50,7 @@ on:
       - "scripts/conformance/**"
       - "scripts/install/download_dependencies.sh"
       - "Cargo.lock"
+      - "Cargo.toml"
       - ".github/workflows/pdf-conformance.yml"
   workflow_dispatch:
 
@@ -60,19 +70,29 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  snapshots:
-    name: snapshots · groundtruth
+  preflight:
+    name: PDF contract preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check conformance configuration and fail-closed setup
+      # No toolchain, network downloads, model weights, or GitHub caches.
+      - name: Validate shell syntax and fail-closed conversion boundaries
+        shell: bash
         run: |
           for script in scripts/conformance/pdf_env.sh scripts/conformance/pdf_conformance.sh scripts/conformance/pdf_groundtruth.sh scripts/conformance/test_pdf_env.sh; do
             bash -n "$script"
           done
           bash scripts/conformance/test_pdf_env.sh
+
+  snapshots:
+    name: snapshots · groundtruth
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
 
       # rustup is preinstalled on GitHub-hosted runners; use it directly rather
       # than a marketplace toolchain action (the docling-project org allowlists
@@ -111,6 +131,13 @@ jobs:
       - name: Fetch the models and the docling-parse renderer
         if: steps.models.outputs.cache-hit != 'true'
         run: scripts/install/download_dependencies.sh --no-asr --no-chunk --with-docling-parse
+
+      # Check restored caches or downloads *before* compiling Rust.
+      - name: Verify the model and renderer inputs
+        shell: bash
+        run: |
+          source scripts/conformance/pdf_env.sh
+          docling_pdf_conformance_env
 
       - name: Build
         shell: bash

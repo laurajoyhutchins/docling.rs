@@ -22,7 +22,7 @@ docling_pdf_conformance_env() {
            "$DOCLING_OCR_DICT" "$DOCLING_OCR_DET_ONNX" \
            "$DOCLING_TABLEFORMER_ENCODER" "$DOCLING_TABLEFORMER_DECODER" \
            "$DOCLING_TABLEFORMER_BBOX"; do
-    if [[ ! -f "$f" ]]; then
+    if [[ ! -s "$f" ]]; then
       printf 'MISSING: %s (run scripts/install/pdf_setup.sh)\n' "$f" >&2
       return 1
     fi
@@ -30,15 +30,22 @@ docling_pdf_conformance_env() {
 
   # The reference baselines were generated using the docling-parse renderer.
   # Explicit Rust or PDFium overrides remain useful for parity diagnosis.
-  if [[ "$DOCLING_RS_RENDERER" == docling-parse ]]; then
+  case "$DOCLING_RS_RENDERER" in
+  docling-parse)
     found=0
     for f in "$DOCLING_PARSE_RENDER_LIB"/libdparse_render.*; do
-      if [[ -f "$f" ]]; then found=1; break; fi
+      if [[ -s "$f" ]]; then found=1; break; fi
     done
     if (( ! found )); then
       printf 'MISSING: %s/libdparse_render.* (build docling-parse renderer or select DOCLING_RS_RENDERER=rust)\n' \
         "$DOCLING_PARSE_RENDER_LIB" >&2
       return 1
     fi
-  fi
+    ;;
+  rust|pdfium) ;;
+  *)
+    printf 'UNSUPPORTED: DOCLING_RS_RENDERER=%s (expected docling-parse, rust or pdfium)\n' "$DOCLING_RS_RENDERER" >&2
+    return 1
+    ;;
+  esac
 }
