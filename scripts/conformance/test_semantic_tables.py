@@ -192,5 +192,68 @@ class SemanticTableTests(unittest.TestCase):
         self.assertIn("| cross_references | unsupported | 0/0 |", text)
 
 
+    def test_reference_only_scores_pinned_real_documents_without_models(self):
+        import json
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as folder:
+            report = Path(folder) / "scores.json"
+            review = Path(folder) / "review.md"
+            exit_status = audit.main(["--reference-only", "--report", str(report),
+                                      "--review", str(review)])
+            self.assertEqual(exit_status, 0)
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(data["schema_version"], 2)
+            self.assertEqual(data["summary"]["bindings"], 8)
+            self.assertEqual(data["summary"]["passed_bindings"], 8)
+            self.assertEqual(data["extraction"]["engine"], "pinned_python_reference")
+            self.assertTrue(review.is_file())
+            self.assertEqual([r["id"] for r in data["results"]],
+                             ["ibm-redp5110-toc", "otsl-paper-hpo-table"])
+            self.assertEqual(data["results"][1]["dimensions"]["reading_order"]["status"],
+                             "passed")
+            for item in data["results"]:
+                self.assertEqual(item["dimensions"]["cross_references"]["status"],
+                                 "unsupported")
+                self.assertEqual(item["dimensions"]["bounding_boxes"]["status"],
+                                 "unsupported")
+
+    def test_report_only_cannot_hide_missing_input(self):
+        import json
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as folder:
+            tmp = Path(folder)
+            manifest = tmp / "cases.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1, "cases": [{
+                    "id": "missing", "source": "tests/data/pdf/sources/missing.pdf",
+                    "source_git_blob": "bad", "source_url": "not-present",
+                    "original_pdf_pages": [1], "bindings": []
+                }]
+            }), encoding="utf-8")
+            report = tmp / "report.json"
+            result = audit.main(["--cases", str(manifest), "--reference-only",
+                                 "--report-only", "--report", str(report),
+                                 "--review", str(tmp / "review.md")])
+            self.assertEqual(result, 1)
+            rows = json.loads(report.read_text(encoding="utf-8"))["results"]
+            self.assertEqual(rows[0]["passed"], False)
+            self.assertEqual(rows[0]["error_class"], "conversion_or_input_error")
+
+    def test_failed_binding_includes_bounded_minimal_repro(self):
+        import semantic_dimensions as dims
+        case = {"bindings": [{"name": "rating", "cells": [
+            {"equals": "10 HP"}, {"equals": "14 A"}]}]}
+        doc = {"tables": [table(cell("10 HP", 0, 0),
+                                 cell("14 A", 1, 1), rows=2, cols=2)]}
+        repro = dims.minimal_repros(doc, case, audit.score_document(doc, case))
+        self.assertEqual(len(repro), 1)
+        self.assertEqual(repro[0]["expected_source_cells"], case["bindings"][0]["cells"])
+        self.assertEqual(repro[0]["observed_candidate_count"], 2)
+        self.assertEqual([x["row"] for x in repro[0]["observed_matching_cells"]],
+                         [[0, 1], [1, 2]])
+
+
 if __name__ == "__main__":
     unittest.main()
