@@ -69,7 +69,9 @@ jobs:
 
       - name: Check conformance configuration and fail-closed setup
         run: |
-          bash -n scripts/conformance/pdf_env.sh scripts/conformance/pdf_conformance.sh scripts/conformance/pdf_groundtruth.sh scripts/conformance/test_pdf_env.sh
+          for script in scripts/conformance/pdf_env.sh scripts/conformance/pdf_conformance.sh scripts/conformance/pdf_groundtruth.sh scripts/conformance/test_pdf_env.sh; do
+            bash -n "$script"
+          done
           bash scripts/conformance/test_pdf_env.sh
 
       # rustup is preinstalled on GitHub-hosted runners; use it directly rather

@@ -29,7 +29,10 @@ docling_pdf_conformance_env
 [[ "$DOCLING_RS_RENDERER" == rust ]]
 
 # Any missing model, including TableFormer, must make BOTH gates fail closed.
-for missing in "$DOCLING_LAYOUT_ONNX" "$DOCLING_TABLEFORMER_DECODER"; do
+for missing in "$DOCLING_LAYOUT_ONNX" "$DOCLING_OCR_REC_ONNX" \
+               "$DOCLING_OCR_DICT" "$DOCLING_OCR_DET_ONNX" \
+               "$DOCLING_TABLEFORMER_ENCODER" "$DOCLING_TABLEFORMER_DECODER" \
+               "$DOCLING_TABLEFORMER_BBOX"; do
   rm "$missing"
   if (docling_pdf_conformance_env >/dev/null 2>&1); then
     echo "FAIL: accepted missing model $missing" >&2; exit 1
