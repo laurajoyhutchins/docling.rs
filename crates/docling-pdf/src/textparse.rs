@@ -2646,9 +2646,19 @@ const AGL_LATIN: &[(&str, char)] = &[
 /// retried — docling renders these as the base character.
 pub(crate) fn glyph_name_to_char(name: &[u8]) -> Option<char> {
     let s = std::str::from_utf8(name).ok()?;
-    if let Some(hex) = s.strip_prefix("uni") {
-        if let Ok(cp) = u32::from_str_radix(hex.get(0..4)?, 16) {
-            return char::from_u32(cp);
+    // Adobe Glyph List for New Fonts: "uni" uses exactly four hex
+    // digits for one UTF-16 BMP code unit; "u" uses four to six for
+    // one Unicode scalar (including supplementary planes). Never decode
+    // just the first four digits of a longer name: "uni00410042"
+    // represents two characters and cannot be collapsed to 'A'.
+    let hex = s.strip_prefix("uni").filter(|v| v.len() == 4).or_else(|| {
+        s.strip_prefix('u')
+            .filter(|v| (4..=6).contains(&v.len()))
+    });
+    if let Some(hex) = hex {
+        if hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let cp = u32::from_str_radix(hex, 16).ok()?;
+            return char::from_u32(cp).filter(|c| !c.is_control());
         }
     }
     // Single ASCII letter names (`A`, `m`) map to themselves.
@@ -2926,6 +2936,24 @@ mod glyph_names {
                 Some(ch),
                 "{name}"
             );
+        }
+        // AGL "uni" and "u" names cover BMP and supplementary scalars.
+        for (name, expected) in [
+            (b"uni0041".as_slice(), Some('A')),
+            (b"uni03B1".as_slice(), Some('α')),
+            (b"u1F600".as_slice(), Some('😀')),
+            (b"u10FFFF".as_slice(), Some('\u{10FFFF}')),
+            (b"u0041".as_slice(), Some('A')),
+            // No partial decoding of a multi-codepoint or malformed name.
+            (b"uni00410042".as_slice(), None),
+            (b"uni0041oops".as_slice(), None),
+            (b"u0041junk".as_slice(), None),
+            (b"u123".as_slice(), None),
+            (b"u110000".as_slice(), None),
+            (b"uniD800".as_slice(), None),
+            (b"uni000A".as_slice(), None),
+        ] {
+            assert_eq!(super::glyph_name_to_char(name), expected, "{name:?}");
         }
         assert_eq!(super::glyph_name_to_char(b"g123"), None);
         // AGL ligature names: components joined with `_`.
