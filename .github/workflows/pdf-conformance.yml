@@ -60,8 +60,38 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  semantic-preflight:
+    name: source-grounded semantic contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # Use only Python stdlib and the committed source/reference bytes.
+      - name: Test table bindings, numeric identity, and integrity failures
+        run: python3 -m unittest discover -s scripts/conformance -p test_semantic_tables.py
+      - name: Validate pinned PDF source/reference facts
+        shell: bash
+        run: |
+          python3 scripts/conformance/semantic_tables.py --reference-only \
+            --report "$RUNNER_TEMP/semantic-reference.json" \
+            --review "$RUNNER_TEMP/semantic-reference.md"
+          python3 - "$RUNNER_TEMP/semantic-reference.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as source:
+              report = json.load(source)
+          summary = report["summary"]
+          assert report["extraction"]["engine"] == "pinned_python_reference"
+          assert summary["cases"] == summary["passed_cases"] == 2, summary
+          assert summary["bindings"] == summary["passed_bindings"] == 8, summary
+          assert all(item["reference_compatible"] and item["passed"]
+                     for item in report["results"])
+          print("SEMANTIC_REFERENCE_CONTRACT_PASSED")
+          PY
+
   snapshots:
     name: snapshots · groundtruth
+    needs: semantic-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -69,9 +99,6 @@ jobs:
 
       - name: Check PDF conformance harness syntax
         run: bash -n scripts/conformance/pdf_groundtruth.sh
-
-      - name: Test source-grounded table scorer (no models)
-        run: python3 -m unittest discover -s scripts/conformance -p test_semantic_tables.py
 
       # rustup is preinstalled on GitHub-hosted runners; use it directly rather
       # than a marketplace toolchain action (the docling-project org allowlists
