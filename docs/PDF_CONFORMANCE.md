@@ -1459,6 +1459,41 @@ deterministic and byte-stable); multi-threaded corpus diffs of a few lines on
 table-dense fixtures are thread-scheduling jitter, not necessarily a real
 change.
 
+**Conformance runner policy (#17, 2026-10-26).** Both
+`scripts/conformance/pdf_groundtruth.sh` and
+`scripts/conformance/pdf_conformance.sh` now enforce
+`DOCLING_RS_PDF_THREADS=1` and `DOCLING_RS_FP32=1`. This removes a
+known source of test-environment variability; it does **not** establish
+a new model-backed pass or authorize a snapshot refresh.
+
+For a suspected code regression, build baseline and candidate binaries
+separately and compare on the same pinned source PDFs, model weights, and
+renderer using `scripts/conformance/pdf_repro.py`. It hashes the input PDFs,
+ONNX models, renderer, binaries and produced outputs, running each revision
+at least twice. Its JSON report fails closed on failed conversions and
+inconsistent repeats; it intentionally **does not** fail on a stable
+base-to-candidate difference. Inspect that difference against source evidence.
+
+```bash
+python3 scripts/conformance/pdf_repro.py \
+  --baseline /tmp/docling/base/docling-rs \
+  --baseline-revision e91d7fe5e756aabae322bba10d48f4d8cfce8ce0 \
+  --candidate target/release/docling-rs \
+  --candidate-revision REPLACE_WITH_EXACT_40_CHARACTER_SHA \
+  --source tests/data/pdf/sources/2203.01017v2.pdf \
+  --source tests/data/pdf/sources/2206.01062.pdf \
+  --source tests/data/pdf/sources/base14_fonts_rot90.pdf \
+  --out target/pdf-repro
+```
+
+To isolate renderer changes (#22), pass **the same binary** for both
+variants and set `--baseline-renderer rust --candidate-renderer docling-parse`.
+To isolate source changes, use the same renderer for both variants. For
+layout/reading-order failures (#18–#20), inspect typed JSON structure,
+source geometry and model predictions instead of relying on Markdown
+parity alone. The independently diagnosed #16 table assignment regression
+must not be conflated with these residuals.
+
 ### Reproducing
 
 ```bash
