@@ -772,10 +772,19 @@ mod tests {
     #[test]
     fn cross_slot_tie_preserves_docling_first_maximum_with_separate_evidence() {
         let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
-        let matches = Matches::from([(7, vec![
-            MatchEntry { table_cell_id: 0, score: 0.5 },
-            MatchEntry { table_cell_id: 1, score: 0.5 },
-        ])]);
+        let matches = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.5,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
         let (assigned, ties) = do_final_assignment(&matches, &cells);
         assert_eq!(assigned[&7][0].table_cell_id, 0);
         assert_eq!(ties.len(), 1);
