@@ -174,6 +174,35 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     f"source fixture changed: expected git blob {case['source_git_blob']}, got {git_blob}"
                 )
+            # An impossible benchmark must fail before testing Rust. This
+            # independent upstream sanity gate caught old HPO assertions
+            # that required OTSL/HTML numbers in distinct cells even though
+            # the pinned Docling JSON keeps each method pair in one cell.
+            reference_root = (ROOT / "tests/data/pdf/groundtruth").resolve(strict=True)
+            reference = (ROOT / case["reference_json"]).resolve(strict=True)
+            if not reference.is_relative_to(reference_root):
+                raise ValueError("reference JSON must be in the pinned groundtruth directory")
+            ref_sha256, ref_blob = source_digests(reference)
+            entry["reference_json"] = case["reference_json"]
+            entry["reference_sha256"] = ref_sha256
+            entry["reference_git_blob"] = ref_blob
+            if ref_blob != case["reference_git_blob"]:
+                raise ValueError(
+                    f"reference JSON changed: expected git blob {case['reference_git_blob']}, got {ref_blob}"
+                )
+            reference_doc = json.loads(reference.read_text(encoding="utf-8"))
+            if not isinstance(reference_doc, dict):
+                raise ValueError("reference JSON root must be an object")
+            invalid_reference_checks = [
+                check["name"] for check in score_document(reference_doc, case)
+                if not check["passed"]
+            ]
+            if invalid_reference_checks:
+                raise ValueError(
+                    "fixture claims contradict pinned upstream reference: "
+                    + ", ".join(invalid_reference_checks)
+                )
+            entry["reference_compatible"] = True
             if args.json_dir is None:
                 doc = convert(source, args.bin.resolve())
             else:
