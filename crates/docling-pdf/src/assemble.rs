@@ -2699,7 +2699,8 @@ fn crop_region(page: &PdfPage, region: &Region, scale: Option<f32>) -> Option<Pi
     }
 }
 
-/// A `text` region that *says* it is a caption — `Table 5: …`, `Figure 2.
+/// A `text` or `section_header` region that *says* it is a caption —
+/// `Table 5: …`, `Figure 2.
 /// …`, `Fig. 3: …` — and sits right next to a graphic in reading order is one
 /// (a docling.rs extension, `docs/PDF_CONFORMANCE.md`): the layout model
 /// labels a long caption block `text` now and then (2206.01062's four-line
@@ -2718,7 +2719,9 @@ fn promote_labelled_captions(regions: &mut [Region], cells: &[TextCell]) {
     let mut promote = Vec::new();
     for (pos, &i) in body.iter().enumerate() {
         let r = &regions[i];
-        if r.label != "text" || !is_caption_label(&region_text(r, cells)) {
+        if (r.label != "text" && r.label != "section_header")
+            || !is_caption_label(&region_text(r, cells))
+        {
             continue;
         }
         let beside = |g: &Region| {
@@ -4479,6 +4482,54 @@ mod tests {
         ];
         super::promote_labelled_captions(&mut regions, &cells);
         assert_eq!(regions[0].label, "text");
+    }
+
+    /// Standards often print a table caption in exactly the same bold face
+    /// as an article heading. When RT-DETR labels that caption
+    /// `section_header`, the table must retain its original caption ownership;
+    /// source text, local reading order, horizontal overlap and a short
+    /// vertical gap are all required before changing the classifier's label.
+    #[test]
+    fn source_table_caption_mislabeled_as_section_header_binds_locally() {
+        let cells = vec![cell(
+            "Table 1. Minimum working clearance",
+            50.0,
+            390.0,
+            330.0,
+            402.0,
+        )];
+        let caption = region("section_header", 0.97, 50.0, 388.0, 330.0, 405.0);
+        let table = region("table", 0.99, 50.0, 419.0, 460.0, 515.0);
+
+        let mut regions = vec![caption.clone(), table.clone()];
+        super::promote_labelled_captions(&mut regions, &cells);
+        assert_eq!(regions[0].label, "caption");
+        assert_eq!(super::pair_graphic_captions(&regions)[1], Some(0));
+
+        // A heading separated from the graphic by an ordinary paragraph is
+        // not a caption, even if its text looks like a publication label.
+        let mut separated = vec![
+            caption.clone(),
+            region("text", 0.99, 50.0, 408.0, 460.0, 416.0),
+            table.clone(),
+        ];
+        super::promote_labelled_captions(&mut separated, &cells);
+        assert_eq!(separated[0].label, "section_header");
+        assert!(super::pair_graphic_captions(&separated)[2].is_none());
+
+        // Text that merely refers to a table must remain a section header.
+        let other_cells = vec![cell("Table 1 shows the results", 50.0, 390.0, 330.0, 402.0)];
+        let mut ordinary = vec![caption.clone(), table.clone()];
+        super::promote_labelled_captions(&mut ordinary, &other_cells);
+        assert_eq!(ordinary[0].label, "section_header");
+
+        // A caption-like heading far away from the table is also not enough.
+        let mut distant = vec![
+            region("section_header", 0.97, 50.0, 200.0, 330.0, 215.0),
+            table,
+        ];
+        super::promote_labelled_captions(&mut distant, &cells);
+        assert_eq!(distant[0].label, "section_header");
     }
 
     /// Side-by-side figures (`tests/snapshots/latex/…/swa.pdf`): three
