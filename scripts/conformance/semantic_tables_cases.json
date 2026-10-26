@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "reference_notes": "Expected bindings were independently read from the linked source-PDF pages, not copied from the Python Docling JSON or Rust Markdown. Scores are semantic regressions, not proof that entire PDFs were extracted correctly.",
+  "reference_notes": "Expected bindings were independently read from the linked source-PDF pages, not copied from the Python Docling JSON or Rust Markdown. Scores are semantic regressions, not proof that entire PDFs were extracted correctly. The HPO table prints OTSL/HTML as paired values in each metric cell; one number per distinct cell is NOT a valid source assertion. Test whole paired-cell contents in source-defined columns.",
   "cases": [
     {
       "id": "ibm-redp5110-toc",
@@ -67,71 +67,118 @@
       ],
       "bindings": [
         {
-          "name": "6x6 OTSL run retains TED and runtime columns",
+          "name": "6×6 OTSL/HTML paired metrics stay in their printed row",
           "cells": [
             {
-              "equals": "OTSL"
+              "equals": "6"
             },
             {
-              "equals": "0.965"
+              "equals": "6"
             },
             {
-              "equals": "0.934"
+              "equals": "OTSL HTML"
             },
             {
-              "equals": "0.955"
+              "equals": "0.965 0.969"
             },
             {
-              "equals": "0.88"
+              "equals": "0.934 0.927"
             },
             {
-              "equals": "2.73"
+              "equals": "0.955 0.955"
+            },
+            {
+              "equals": "0.88 0.857"
+            },
+            {
+              "equals": "2.73 5.39"
             }
           ]
         },
         {
-          "name": "6x6 HTML run retains TED and runtime columns",
+          "name": "4×4 OTSL/HTML paired metrics stay in their printed row",
           "cells": [
             {
-              "equals": "HTML"
+              "equals": "4"
             },
             {
-              "equals": "0.969"
+              "equals": "4"
             },
             {
-              "equals": "0.927"
+              "equals": "OTSL HTML"
             },
             {
-              "equals": "0.955"
+              "equals": "0.938 0.952"
             },
             {
-              "equals": "0.857"
+              "equals": "0.904 0.909"
             },
             {
-              "equals": "5.39"
+              "equals": "0.927 0.938"
+            },
+            {
+              "equals": "0.853 0.843"
+            },
+            {
+              "equals": "1.97 3.77"
             }
           ]
         },
         {
-          "name": "4x4 OTSL run retains TED and runtime columns",
+          "name": "2×4 OTSL/HTML paired metrics stay in their printed row",
           "cells": [
             {
-              "equals": "OTSL"
+              "equals": "2"
             },
             {
-              "equals": "0.938"
+              "equals": "4"
             },
             {
-              "equals": "0.904"
+              "equals": "OTSL HTML"
             },
             {
-              "equals": "0.927"
+              "equals": "0.923 0.945"
             },
             {
-              "equals": "0.853"
+              "equals": "0.897 0.901"
             },
             {
-              "equals": "1.97"
+              "equals": "0.915 0.931"
+            },
+            {
+              "equals": "0.859 0.834"
+            },
+            {
+              "equals": "1.91 3.81"
+            }
+          ]
+        },
+        {
+          "name": "4×2 OTSL/HTML paired metrics stay in their printed row",
+          "cells": [
+            {
+              "equals": "4"
+            },
+            {
+              "equals": "2"
+            },
+            {
+              "equals": "OTSL HTML"
+            },
+            {
+              "equals": "0.952 0.944"
+            },
+            {
+              "equals": "0.92 0.903"
+            },
+            {
+              "equals": "0.942 0.931"
+            },
+            {
+              "equals": "0.857 0.824"
+            },
+            {
+              "equals": "1.22 2"
             }
           ]
         }
