@@ -19,8 +19,14 @@ either Docling implementation.
 
 The inputs are the existing sampled PDF corpus under
 `tests/data/pdf/sources/`. Each is pinned to its **Git blob SHA-1**, and the
-runner checks those bytes before accepting any score. It also records a SHA-256
-of the actual tested source bytes in its JSON evidence report. Do not confuse
+runner checks those bytes before accepting any score. The corresponding
+pinned Python Docling groundtruth JSON is independently checked against every
+manifest assertion *before* scoring Rust, and its Git blob SHA-1 / content SHA-256
+are recorded. This catches impossible expectations: the earlier HPO manifest
+demanded separate OTSL/HTML scalar cells that Python Docling did not have.
+**Passing the reference check proves only reference compatibility**, not
+independent source fidelity. The original PDF is still the final authority.
+Do not confuse
 the sampled PDFs' SHA-256 with the SHA-256 of the linked full original PDFs.
 
 These bindings are deliberately small: they prove selected relations only.
