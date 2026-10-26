@@ -3045,6 +3045,15 @@ impl TableGrid {
                 }
             }
         }
+        for (r, row) in self.rows.iter().enumerate() {
+            for (c, text) in row.iter().enumerate() {
+                if owners[r][c].is_none() && !text.is_empty() {
+                    return Err(format!(
+                        "grid slot ({r},{c}) has text without first-class ownership"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -3116,6 +3125,24 @@ mod table_grid_contract_tests {
         let mut table = example();
         table.rows[0][1] = "wrong".into();
         assert!(table.validate_cell_ownership().unwrap_err().contains("disagrees"));
+    }
+
+    #[test]
+    fn unowned_nonempty_grid_slot_is_rejected() {
+        let mut table = example();
+        table.cells.pop();
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("text without first-class ownership"));
+    }
+
+    #[test]
+    fn empty_unowned_grid_slot_is_permitted() {
+        let mut table = example();
+        table.cells.pop();
+        table.rows[0][2].clear();
+        assert!(table.validate_cell_ownership().is_ok());
     }
 
     #[test]
@@ -3609,7 +3636,13 @@ pub fn assemble_page(
                     .as_ref()
                     .map(|g| g.unplaced.clone())
                     .unwrap_or_default();
+                // A rejected prediction is an evidence-only result, never an
+                // empty but apparently authoritative table in JSON/Markdown.
+                let rejected_table = table_rows[i].as_ref().is_some_and(|g| {
+                    g.rows.is_empty() && g.cells.is_empty()
+                });
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
+                    Some(grid) if rejected_table => (Vec::new(), None, None),
                     Some(grid) => {
                         let nrows = grid.rows.len();
                         let ncols = grid.rows.first().map_or(0, Vec::len);
@@ -3695,20 +3728,31 @@ pub fn assemble_page(
                     }
                     cell_blocks = Some(blocks);
                 }
-                nodes.push(located(
-                    loc,
-                    Node::Table(Table {
-                        rows,
-                        location: None,
-                        structure,
-                        cell_blocks,
-                        cells,
-                        caption,
-                        // As for pictures: the caption is the table's child.
-                        caption_parent: CaptionParent::Item,
-                        caption_location,
-                    }),
-                ));
+                if rejected_table {
+                    // Preserve an independently observed caption without
+                    // claiming it belongs to a successfully parsed table.
+                    if let Some(caption_text) = caption {
+                        nodes.push(located(
+                            caption_location.unwrap_or(loc),
+                            Node::Paragraph { text: caption_text },
+                        ));
+                    }
+                } else {
+                    nodes.push(located(
+                        loc,
+                        Node::Table(Table {
+                            rows,
+                            location: None,
+                            structure,
+                            cell_blocks,
+                            cells,
+                            caption,
+                            // As for pictures: the caption is the table's child.
+                            caption_parent: CaptionParent::Item,
+                            caption_location,
+                        }),
+                    ));
+                }
                 // Preserve words the source parser read but the predicted
                 // grid cannot place, without inventing TableFormer cells.
                 // The standard invisible content layer keeps these located,
