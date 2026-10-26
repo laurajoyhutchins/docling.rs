@@ -366,8 +366,7 @@ fn do_final_assignment(
             .filter(|other| {
                 other.table_cell_id != best.table_cell_id
                     && other.score == best.score
-                    && (best_slot.is_none()
-                        || slot_for.get(&other.table_cell_id) != best_slot)
+                    && (best_slot.is_none() || slot_for.get(&other.table_cell_id) != best_slot)
             })
             .map(|other| other.table_cell_id)
             .collect();
@@ -730,8 +729,7 @@ mod tests {
             word(3, "below rows", 130.0, 90.0),
             word(4, "outside both", 300.0, 90.0),
         ];
-        let (matches, cells, _) =
-            pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
+        let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
         assert_eq!(matches.len(), 1, "grid owns only a two-axis match");
         assert!(matches.contains_key(&1));
         for id in [2, 3, 4] {
@@ -744,8 +742,7 @@ mod tests {
     #[test]
     fn orphan_without_any_geometric_anchor_remains_explicitly_unrecoverable() {
         let words = [word(1, "unknown location", 400.0, 100.0)];
-        let (matches, cells, _) =
-            pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new());
+        let (matches, cells, _) = pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new());
         assert!(matches.is_empty(), "do not invent a table grid");
         assert!(cells.is_empty());
     }
@@ -758,14 +755,7 @@ mod tests {
         };
         let matches = Matches::from([(5, vec![original.clone()])]);
         let words = [word(5, "assigned", 400.0, 100.0)];
-        let (result, _, _) = pick_orphan_cells(
-            1,
-            1,
-            0,
-            vec![cell(0, 0, 10.0)],
-            &words,
-            matches,
-        );
+        let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
         assert_eq!(result[&5], vec![original]);
     }
 
@@ -851,7 +841,10 @@ mod tests {
             bbox: [40.0, 15.0, 140.0, 23.0],
             text: "source-wide leader".into(),
         };
-        let chosen = MatchEntry { table_cell_id: 0, score: 0.5 };
+        let chosen = MatchEntry {
+            table_cell_id: 0,
+            score: 0.5,
+        };
         let matches = Matches::from([(7, vec![chosen.clone()])]);
         let (result, _, _) = pick_orphan_cells(1, 2, 1, cells, &[source], matches);
         assert_eq!(result[&7], vec![chosen]);
@@ -873,7 +866,10 @@ mod tests {
         let (_, matches, unplaced, ties) = match_and_post_process_with_evidence(cells, &words);
         assert!(matches.contains_key(&1));
         assert!(matches.contains_key(&2));
-        assert!(matches.contains_key(&7), "source text must stay in the visible grid");
+        assert!(
+            matches.contains_key(&7),
+            "source text must stay in the visible grid"
+        );
         assert!(!unplaced.iter().any(|word| word.id == leader.id));
         assert_eq!(ties.len(), 1);
         assert_eq!(ties[0].pdf_id, leader.id);
