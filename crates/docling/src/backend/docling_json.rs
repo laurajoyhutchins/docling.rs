@@ -1588,4 +1588,150 @@ mod tests {
         assert!(read(&unsafe_page).tree.is_none(), "page image evidence must not be dropped");
     }
 
+    /// Existing DOCX reference fixtures were admitted against upstream docling
+    /// 2.129.0 (docs/MIGRATION.md, full conformance sweep). They pin both the
+    /// structural JSON and independently exported Markdown. Do not regenerate
+    /// either expected file as part of a JSON reader change.
+    #[test]
+    fn pinned_docling_inline_fixtures_preserve_fields_and_markdown() {
+        fn check(name: &str, fixture: &str, markdown: &str) {
+            let expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let read = |value: &serde_json::Value| {
+                DoclingJsonBackend
+                    .convert(&SourceDocument::from_bytes(
+                        format!("{name}.json"),
+                        InputFormat::JsonDocling,
+                        value.to_string().into_bytes(),
+                    ))
+                    .unwrap()
+            };
+            let document = read(&expected);
+            assert!(
+                document.tree.is_some(),
+                "{name}: source text, inline items, and references must remain typed"
+            );
+            let first = document.export_to_json_value();
+            for key in ["texts", "groups", "body"] {
+                assert_eq!(
+                    first[key], expected[key],
+                    "{name}: upstream {key} fields must survive JSON import"
+                );
+            }
+            assert_eq!(
+                document.export_to_markdown(),
+                markdown,
+                "{name}: the independent Markdown reference changed"
+            );
+
+            let reread = read(&first);
+            assert!(reread.tree.is_some(), "{name}: second import lost typed structure");
+            let second = reread.export_to_json_value();
+            for key in ["texts", "groups", "body"] {
+                assert_eq!(second[key], first[key], "{name}: {key} drifted on reimport");
+            }
+            assert_eq!(reread.export_to_markdown(), markdown);
+        }
+
+        check(
+            "docx_bold_tail",
+            include_str!("../../tests/data/docx/expected/docx_bold_tail.docx.json"),
+            include_str!("../../tests/data/docx/expected/docx_bold_tail.docx.md"),
+        );
+        check(
+            "equations",
+            include_str!("../../tests/data/docx/expected/equations.docx.json"),
+            include_str!("../../tests/data/docx/expected/equations.docx.md"),
+        );
+        check(
+            "omml_multi_equation_paragraph",
+            include_str!("../../tests/data/docx/expected/omml_multi_equation_paragraph.docx.json"),
+            include_str!("../../tests/data/docx/expected/omml_multi_equation_paragraph.docx.md"),
+        );
+    }
+
+    /// The broad unit_test_formatting document includes pictures/furniture,
+    /// beyond the typed JSON reader's admitted boundary. Select its genuine
+    /// upstream-derived combined bold/italic hyperlink span without weakening
+    /// that boundary or teaching the reader to parse Markdown syntax as facts.
+    #[test]
+    fn pinned_docling_combined_style_hyperlink_retains_exact_url() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/data/docx/expected/unit_test_formatting.docx.json"
+        ))
+        .unwrap();
+        let mut span = fixture["texts"][4].clone();
+        span["self_ref"] = serde_json::json!("#/texts/0");
+        span["parent"] = serde_json::json!({"$ref": "#/body"});
+        let minimal = serde_json::json!({
+            "schema_name": "DoclingDocument",
+            "version": "1.10.0",
+            "name": "upstream-combined-format-link",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [span],
+            "groups": [],
+            "tables": [],
+            "pictures": [],
+            "pages": {}
+        });
+        let read = |value: &serde_json::Value| {
+            DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "inline-link.json",
+                    InputFormat::JsonDocling,
+                    value.to_string().into_bytes(),
+                ))
+                .unwrap()
+        };
+        let document = read(&minimal);
+        assert!(document.tree.is_some());
+        let first = document.export_to_json_value();
+        for key in ["orig", "text", "formatting", "hyperlink"] {
+            assert_eq!(first["texts"][0][key], minimal["texts"][0][key], "{key}");
+        }
+        assert_eq!(first["texts"][0]["formatting"]["bold"], true);
+        assert_eq!(first["texts"][0]["formatting"]["italic"], true);
+        assert_eq!(
+            first["texts"][0]["hyperlink"],
+            "https://github.com/DS4SD/docling"
+        );
+        let reread = read(&first);
+        assert!(reread.tree.is_some());
+        assert_eq!(reread.export_to_json_value()["texts"][0], first["texts"][0]);
+        assert_eq!(reread.export_to_markdown(), document.export_to_markdown());
+    }
+
+    /// Invalid optional fields must never masquerade as absent fields: doing
+    /// so could silently erase URL identity or authored run formatting.
+    #[test]
+    fn malformed_inline_fields_are_not_admitted_as_lossless() {
+        let mut source = serde_json::json!({
+            "schema_name": "DoclingDocument",
+            "name": "typed-invalid",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [{"self_ref": "#/texts/0", "parent": {"$ref": "#/body"},
+                       "children": [], "label": "text", "text": "hello"}],
+            "groups": [],
+            "tables": [],
+            "pictures": []
+        });
+        for (field, invalid) in [
+            ("hyperlink", serde_json::json!({"uri": "https://example.com"})),
+            ("orig", serde_json::json!(12)),
+            ("formatting", serde_json::json!({"bold": "true"})),
+            ("formatting", serde_json::json!({"script": 12})),
+            ("parent", serde_json::json!({"wrong": "#/body"})),
+        ] {
+            source["texts"][0][field] = invalid;
+            let document = DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "invalid.json",
+                    InputFormat::JsonDocling,
+                    source.to_string().into_bytes(),
+                ))
+                .unwrap();
+            assert!(document.tree.is_none(), "{field}: invalid semantics were dropped");
+            source["texts"][0].as_object_mut().unwrap().remove(field);
+        }
+    }
+
 }
