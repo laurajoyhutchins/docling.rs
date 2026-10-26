@@ -336,12 +336,16 @@ fn deduplicate_cells(
 /// observation. Leave only those cross-slot ties unplaced so the caller's
 /// existing invisible evidence layer retains the word and its source box.
 /// Ties between duplicate predictions of the *same* grid slot are harmless.
-fn do_final_assignment(ioc_matches: &Matches, table_cells: &[TfCell]) -> Matches {
+fn do_final_assignment(
+    ioc_matches: &Matches,
+    table_cells: &[TfCell],
+) -> (Matches, std::collections::BTreeSet<usize>) {
     let slot_for: BTreeMap<usize, (usize, usize)> = table_cells
         .iter()
         .map(|c| (c.cell_id, (c.row_id, c.column_id)))
         .collect();
     let mut new_matches: Matches = BTreeMap::new();
+    let mut ambiguous_words = std::collections::BTreeSet::new();
     for (&pdf_id, list) in ioc_matches {
         let Some(mut best) = list.first() else {
             continue;
@@ -360,11 +364,13 @@ fn do_final_assignment(ioc_matches: &Matches, table_cells: &[TfCell]) -> Matches
                 && (best_slot.is_none()
                     || slot_for.get(&other.table_cell_id) != best_slot)
         });
-        if !ambiguous {
+        if ambiguous {
+            ambiguous_words.insert(pdf_id);
+        } else {
             new_matches.insert(pdf_id, vec![best.clone()]);
         }
     }
-    new_matches
+    (new_matches, ambiguous_words)
 }
 
 /// Step 8.a: `_align_table_cells_to_pdf` — matched cells take the union box
@@ -504,6 +510,7 @@ fn pick_orphan_cells(
     mut table_cells: Vec<TfCell>,
     pdf_cells: &[PdfWord],
     mut matches: Matches,
+    explicitly_ambiguous: &std::collections::BTreeSet<usize>,
 ) -> (Matches, Vec<TfCell>, usize) {
     // NOTE: docling's row-band pass exposes an aliasing quirk — the band's
     // orphan test reads `matches` as it was on entry (orphans found later
@@ -554,6 +561,12 @@ fn pick_orphan_cells(
 
     // Ascending pdf id, matching the sorted C++-parity loop in the source.
     for (&pdf_id, &new_row_id) in row_of.iter() {
+        // A cross-slot exact tie was deliberately left unresolved. The
+        // orphan band heuristic has no stronger evidence and must not assign
+        // that source word again through an arbitrary nearest-cell fallback.
+        if explicitly_ambiguous.contains(&pdf_id) {
+            continue;
+        }
         let Some(&(new_column_id, confidence, pdf_bbox)) = col_of.get(&pdf_id) else {
             continue;
         };
@@ -627,7 +640,8 @@ pub fn match_and_post_process_with_unplaced(
     let (dedupl_cells, dedupl_matches) = deduplicate_cells(tab_columns, &fixed, &matches, &ioc);
 
     // Step 8: one table cell per word.
-    let final_matches = do_final_assignment(&dedupl_matches, &dedupl_cells);
+    let (final_matches, ambiguous_words) =
+        do_final_assignment(&dedupl_matches, &dedupl_cells);
 
     // Step 8.a: align cell boxes to their matched words (dropping unmatched
     // cells) — skipped for large pages, as in the source.
@@ -648,6 +662,7 @@ pub fn match_and_post_process_with_unplaced(
         aligned,
         pdf_cells,
         final_matches,
+        &ambiguous_words,
     );
     let unplaced: Vec<PdfWord> = pdf_cells
         .iter()
@@ -700,7 +715,15 @@ mod tests {
             word(3, "below rows", 130.0, 90.0),
             word(4, "outside both", 300.0, 90.0),
         ];
-        let (matches, cells, _) = pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
+        let (matches, cells, _) = pick_orphan_cells(
+            1,
+            2,
+            1,
+            cells,
+            &words,
+            Matches::new(),
+            &Default::default(),
+        );
         assert_eq!(matches.len(), 1, "grid owns only a two-axis match");
         assert!(matches.contains_key(&1));
         for id in [2, 3, 4] {
@@ -713,7 +736,15 @@ mod tests {
     #[test]
     fn orphan_without_any_geometric_anchor_remains_explicitly_unrecoverable() {
         let words = [word(1, "unknown location", 400.0, 100.0)];
-        let (matches, cells, _) = pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new());
+        let (matches, cells, _) = pick_orphan_cells(
+            1,
+            1,
+            0,
+            vec![],
+            &words,
+            Matches::new(),
+            &Default::default(),
+        );
         assert!(matches.is_empty(), "do not invent a table grid");
         assert!(cells.is_empty());
     }
@@ -726,7 +757,15 @@ mod tests {
         };
         let matches = Matches::from([(5, vec![original.clone()])]);
         let words = [word(5, "assigned", 400.0, 100.0)];
-        let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
+        let (result, _, _) = pick_orphan_cells(
+            1,
+            1,
+            0,
+            vec![cell(0, 0, 10.0)],
+            &words,
+            matches,
+            &Default::default(),
+        );
         assert_eq!(result[&5], vec![original]);
     }
 
@@ -746,8 +785,9 @@ mod tests {
                 },
             ],
         )]);
-        let assigned = do_final_assignment(&candidates, &predicted);
+        let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
         assert!(!assigned.contains_key(&7), "cross-column tie is not a fact");
+        assert!(ambiguous.contains(&7), "retain the explicit no-ownership evidence");
     }
 
     #[test]
@@ -766,7 +806,8 @@ mod tests {
                 },
             ],
         )]);
-        let assigned = do_final_assignment(&candidates, &predicted);
+        let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
+        assert!(ambiguous.is_empty());
         assert_eq!(assigned[&7][0].table_cell_id, 0);
     }
 
@@ -788,8 +829,30 @@ mod tests {
                 },
             ],
         )]);
-        let assigned = do_final_assignment(&candidates, &predicted);
+        let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
+        assert!(ambiguous.is_empty());
         assert_eq!(assigned[&7][0].table_cell_id, 0);
+    }
+
+    #[test]
+    fn ambiguous_word_is_not_recovered_by_orphan_band_fallback() {
+        let predicted = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let source_word = PdfWord {
+            id: 7,
+            bbox: [40.0, 15.0, 140.0, 23.0],
+            text: "source-wide leader".into(),
+        };
+        let excluded = std::collections::BTreeSet::from([7]);
+        let (matches, _, _) = pick_orphan_cells(
+            1,
+            2,
+            1,
+            predicted,
+            &[source_word],
+            Matches::new(),
+            &excluded,
+        );
+        assert!(matches.is_empty(), "do not restore ambiguous membership");
     }
 
     #[test]
