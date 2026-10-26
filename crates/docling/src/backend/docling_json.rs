@@ -169,7 +169,7 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
             return None;
         }
         let expected = format!("#/texts/{index}");
-        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(&expected)) {
+        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(expected.as_str())) {
             return None;
         }
         // Ill-typed present fields are not equivalent to absent fields: a
@@ -284,7 +284,7 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
             return None;
         }
         let expected = format!("#/groups/{index}");
-        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(&expected)) {
+        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(expected.as_str())) {
             return None;
         }
         if item.get("name").is_some_and(|v| !v.is_string()) {
