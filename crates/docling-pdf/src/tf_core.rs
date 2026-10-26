@@ -897,7 +897,7 @@ mod tests {
                 bbox: [10.0, 0.0, 20.0, 10.0],
             },
         ];
-        let admitted = admit_table_grid(input, &source);
+        let admitted = admit_table_grid(input, &source, &[31, 47]);
         assert!(admitted.cells.is_empty(), "do not invent source cell ownership");
         assert!(admitted.rows.is_empty(), "do not present an inferred table");
         assert_eq!(admitted.unplaced.len(), 2);
