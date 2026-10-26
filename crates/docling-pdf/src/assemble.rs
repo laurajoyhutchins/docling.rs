@@ -3029,9 +3029,11 @@ impl TableGrid {
                     return Err(format!("cell {index}: invalid bounding box"));
                 }
             }
-            for row in cell.start_row..end_row {
-                for col in cell.start_col..end_col {
-                    if let Some(other) = owners[row][col] {
+            let owned_rows = owners.iter_mut().enumerate().skip(cell.start_row);
+            for (row, row_owners) in owned_rows.take(cell.row_span) {
+                let owned_cols = row_owners.iter_mut().enumerate().skip(cell.start_col);
+                for (col, slot_owner) in owned_cols.take(cell.col_span) {
+                    if let Some(other) = *slot_owner {
                         return Err(format!(
                             "cell {index}: grid slot ({row},{col}) already owned by cell {other}"
                         ));
@@ -3041,7 +3043,7 @@ impl TableGrid {
                             "cell {index}: grid slot ({row},{col}) disagrees with its source cell"
                         ));
                     }
-                    owners[row][col] = Some(index);
+                    *slot_owner = Some(index);
                 }
             }
         }
