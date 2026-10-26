@@ -117,3 +117,5 @@ SHA-256s are not pinned here. Do not claim extractor accuracy or legal rights fr
 public accessibility or Python parity.
 
 Failed table associations now include a bounded expected-versus-observed logical-cell reproduction, and unassigned-source-word coverage is explicitly unsupported. The runner records SHA-256 fingerprints for candidate ONNX model files when present, along with explicit overrides, extraction settings, Rust binary digest, and checkout revision. Candidate model presence is NOT proof of which weights the runtime actually loaded.
+
+The fixture manifest and machine-readable scorecard have internal Draft 2020-12 JSON Schema contracts at scripts/conformance/schemas/semantic_cases.schema.json and semantic_scorecard.schema.json, respectively. Schema presence does not itself establish independent source review or model-backed extraction; those remain separate gates.
