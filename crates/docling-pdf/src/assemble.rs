@@ -3128,6 +3128,49 @@ mod table_grid_contract_tests {
     }
 
     #[test]
+    fn rejected_table_is_not_serialized_even_without_flattened_region_text() {
+        use super::assemble_page;
+        use crate::layout::Region;
+        use crate::pdfium_backend::PdfPage;
+        use docling_core::Node;
+
+        let page = PdfPage::from_cells(200.0, 200.0, 2.0, Vec::new());
+        let region = Region {
+            label: "table",
+            score: 0.95,
+            l: 10.0,
+            t: 10.0,
+            r: 190.0,
+            b: 90.0,
+        };
+        let rejected = TableGrid {
+            rows: Vec::new(),
+            cells: Vec::new(),
+            unplaced: vec![super::UnplacedTableWord {
+                source_cell_id: 17,
+                text: "480 V".to_string(),
+                bbox: [12.0, 20.0, 50.0, 30.0],
+            }],
+        };
+        let (nodes, _) = assemble_page(&page, vec![region], &[Some(rejected)], &[None], None);
+        assert!(
+            !nodes.iter().any(|n| match n {
+                Node::Table(_) => true,
+                Node::Located { inner, .. } => matches!(inner.as_ref(), Node::Table(_)),
+                _ => false,
+            }),
+            "a rejected grid must never become a real table: {nodes:?}"
+        );
+        assert!(nodes.iter().any(|n| {
+            matches!(n, Node::Group { label, .. } if label == "unplaced_table_text")
+        }), "unplaced source words must survive assembly: {nodes:?}");
+        let mut doc = docling_core::DoclingDocument::new("unsupported");
+        doc.nodes = nodes;
+        let json = doc.export_to_json_value();
+        assert_eq!(json["tables"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
     fn unowned_nonempty_grid_slot_is_rejected() {
         let mut table = example();
         table.cells.pop();
@@ -3587,7 +3630,14 @@ pub fn assemble_page(
         }
         let mut text = region_texts[i].clone();
         text.push_str(&merge_suffix[i]);
-        if text.is_empty() {
+        // A rejected TableFormer prediction may have no flattened region
+        // text while still carrying individually located PDF source words.
+        // Never let the presentation-text guard erase that evidence.
+        let has_table_evidence = is_table_like(region.label)
+            && table_rows[i]
+                .as_ref()
+                .is_some_and(|g| !g.cells.is_empty() || !g.unplaced.is_empty());
+        if text.is_empty() && !has_table_evidence {
             continue;
         }
         match region.label {
