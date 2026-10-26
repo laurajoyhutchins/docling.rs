@@ -1886,4 +1886,5 @@ mod tests {
             );
             source["texts"][0].as_object_mut().unwrap().remove(field);
         }
-    }}
+     }
+}
