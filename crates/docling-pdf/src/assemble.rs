@@ -2992,6 +2992,143 @@ pub struct UnplacedTableWord {
     pub bbox: [f32; 4],
 }
 
+/// Reject structurally unsupported TableFormer cells before their grid is
+/// admitted to the document. Empty slots are allowed, but every predicted cell
+/// must own a distinct, in-bounds rectangle whose dense text agrees with it.
+impl TableGrid {
+    pub fn validate_cell_ownership(&self) -> Result<(), String> {
+        let num_rows = self.rows.len();
+        let num_cols = self.rows.first().map_or(0, Vec::len);
+        if num_rows == 0 || num_cols == 0 {
+            return Err("empty predicted table grid".to_string());
+        }
+        if self.rows.iter().any(|row| row.len() != num_cols) {
+            return Err("ragged predicted table grid".to_string());
+        }
+        let mut owners = vec![vec![None::<usize>; num_cols]; num_rows];
+        for (index, cell) in self.cells.iter().enumerate() {
+            if cell.row_span == 0 || cell.col_span == 0 {
+                return Err(format!("cell {index}: zero-length span"));
+            }
+            let end_row = cell
+                .start_row
+                .checked_add(cell.row_span)
+                .ok_or_else(|| format!("cell {index}: row span overflow"))?;
+            let end_col = cell
+                .start_col
+                .checked_add(cell.col_span)
+                .ok_or_else(|| format!("cell {index}: column span overflow"))?;
+            if end_row > num_rows || end_col > num_cols {
+                return Err(format!("cell {index}: span outside predicted grid"));
+            }
+            if let Some([left, top, right, bottom]) = cell.bbox {
+                if ![left, top, right, bottom].iter().all(|v| v.is_finite())
+                    || right < left
+                    || bottom < top
+                {
+                    return Err(format!("cell {index}: invalid bounding box"));
+                }
+            }
+            for row in cell.start_row..end_row {
+                for col in cell.start_col..end_col {
+                    if let Some(other) = owners[row][col] {
+                        return Err(format!(
+                            "cell {index}: grid slot ({row},{col}) already owned by cell {other}"
+                        ));
+                    }
+                    if self.rows[row][col] != cell.text {
+                        return Err(format!(
+                            "cell {index}: grid slot ({row},{col}) disagrees with its source cell"
+                        ));
+                    }
+                    owners[row][col] = Some(index);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod table_grid_contract_tests {
+    use super::TableGrid;
+    use docling_core::TableCell;
+
+    fn cell(text: &str, row: usize, col: usize, colspan: usize) -> TableCell {
+        TableCell {
+            text: text.into(),
+            bbox: Some([0.0, 0.0, 10.0, 10.0]),
+            start_row: row,
+            start_col: col,
+            row_span: 1,
+            col_span: colspan,
+            column_header: false,
+            row_header: false,
+            row_section: false,
+        }
+    }
+
+    fn example() -> TableGrid {
+        TableGrid {
+            rows: vec![vec!["A".into(), "A".into(), "B".into()]],
+            cells: vec![cell("A", 0, 0, 2), cell("B", 0, 2, 1)],
+            unplaced: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn valid_spanning_cells_can_be_admitted() {
+        assert!(example().validate_cell_ownership().is_ok());
+    }
+
+    #[test]
+    fn conflicting_grid_ownership_is_rejected() {
+        let mut table = example();
+        table.cells.push(cell("A", 0, 1, 1));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("already owned"));
+    }
+
+    #[test]
+    fn invalid_spans_and_overflows_are_rejected() {
+        let mut table = example();
+        table.cells[0].col_span = 0;
+        assert!(table.validate_cell_ownership().unwrap_err().contains("zero-length"));
+
+        let mut table = example();
+        table.cells[0].start_row = usize::MAX;
+        table.cells[0].row_span = 2;
+        assert!(table.validate_cell_ownership().unwrap_err().contains("overflow"));
+
+        let mut table = example();
+        table.cells[0].col_span = 4;
+        assert!(table.validate_cell_ownership().unwrap_err().contains("outside"));
+    }
+
+    #[test]
+    fn invalid_geometry_or_wrong_dense_text_is_rejected() {
+        let mut table = example();
+        table.cells[0].bbox = Some([f32::NAN, 0.0, 10.0, 10.0]);
+        assert!(table.validate_cell_ownership().unwrap_err().contains("bounding box"));
+
+        let mut table = example();
+        table.rows[0][1] = "wrong".into();
+        assert!(table.validate_cell_ownership().unwrap_err().contains("disagrees"));
+    }
+
+    #[test]
+    fn unowned_empty_grid_slots_are_not_invented_as_cells() {
+        let table = TableGrid {
+            rows: vec![vec!["A".into(), String::new()]],
+            cells: vec![cell("A", 0, 0, 1)],
+            unplaced: Vec::new(),
+        };
+        assert!(table.validate_cell_ownership().is_ok());
+    }
+}
+
 /// docling's `_RICH_CELL_PICTURE_COVERAGE_THRESHOLD`.
 const RICH_CELL_PICTURE_COVERAGE: f32 = 0.8;
 

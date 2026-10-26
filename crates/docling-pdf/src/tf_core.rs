@@ -308,6 +308,29 @@ pub fn argmax(v: &[f32]) -> usize {
 use crate::pdfium_backend::TextCell;
 use crate::tf_match::{PdfWord, TfCell};
 
+/// Admit TableFormer ownership only after validating the first-class grid.
+/// A contradictory prediction is not a source fact. Retain every in-region
+/// PDF word with its actual source id and box as unplaced evidence, rather than
+/// exporting made-up table associations or falling back to invented geometry.
+fn admit_table_grid(grid: TableGrid, source_words: &[PdfWord]) -> TableGrid {
+    if let Err(reason) = grid.validate_cell_ownership() {
+        eprintln!("docling-pdf: rejected TableFormer cell ownership: {reason}");
+        return TableGrid {
+            rows: Vec::new(),
+            cells: Vec::new(),
+            unplaced: source_words
+                .iter()
+                .map(|word| crate::assemble::UnplacedTableWord {
+                    source_cell_id: word.id,
+                    text: word.text.clone(),
+                    bbox: word.bbox.map(|value| value as f32),
+                })
+                .collect(),
+        };
+    }
+    grid
+}
+
 /// The ONNX-free tail of TableFormer row prediction: match the page's word
 /// cells into the predicted structure `cells` and expand spans into a dense
 /// `rows × cols` text grid. `region` is `(l, t, r, b)` in page points; `cells`
@@ -401,11 +424,14 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         }
         out_cells.push(first_class_cell(text, Some(boxes[ci]), c, c.tag));
     }
-    Some(TableGrid {
-        rows: grid,
-        cells: out_cells,
-        unplaced: Vec::new(),
-    })
+    Some(admit_table_grid(
+        TableGrid {
+            rows: grid,
+            cells: out_cells,
+            unplaced: Vec::new(),
+        },
+        &table_words,
+    ))
 }
 
 /// A public first-class cell (#240) from a predicted OTSL cell: the span
@@ -606,23 +632,26 @@ fn docling_match_rows(
             row_section: m.tag == SROW,
         });
     }
-    Some(TableGrid {
-        rows: grid,
-        cells: out_cells,
-        unplaced: unplaced
-            .into_iter()
-            .map(|w| crate::assemble::UnplacedTableWord {
-                source_cell_id: w.id,
-                text: w.text,
-                bbox: [
-                    (w.bbox[0] / SCALE) as f32,
-                    (w.bbox[1] / SCALE) as f32,
-                    (w.bbox[2] / SCALE) as f32,
-                    (w.bbox[3] / SCALE) as f32,
-                ],
-            })
-            .collect(),
-    })
+    Some(admit_table_grid(
+        TableGrid {
+            rows: grid,
+            cells: out_cells,
+            unplaced: unplaced
+                .into_iter()
+                .map(|w| crate::assemble::UnplacedTableWord {
+                    source_cell_id: w.id,
+                    text: w.text,
+                    bbox: [
+                        (w.bbox[0] / SCALE) as f32,
+                        (w.bbox[1] / SCALE) as f32,
+                        (w.bbox[2] / SCALE) as f32,
+                        (w.bbox[3] / SCALE) as f32,
+                    ],
+                })
+                .collect(),
+        },
+        table_words,
+    ))
 }
 
 /// Append one JSON line per table into `<dir>/tf_match_dump.jsonl` with the
@@ -692,6 +721,57 @@ fn serde_json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_tableformer_prediction_retains_source_words_without_ownership() {
+        let input = TableGrid {
+            rows: vec![vec!["first".into(), "second".into()]],
+            cells: vec![
+                docling_core::TableCell {
+                    text: "first".into(),
+                    bbox: None,
+                    start_row: 0,
+                    start_col: 0,
+                    row_span: 1,
+                    col_span: 2,
+                    column_header: false,
+                    row_header: false,
+                    row_section: false,
+                },
+                docling_core::TableCell {
+                    text: "second".into(),
+                    bbox: None,
+                    start_row: 0,
+                    start_col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    column_header: false,
+                    row_header: false,
+                    row_section: false,
+                },
+            ],
+            unplaced: Vec::new(),
+        };
+        let source = vec![
+            PdfWord {
+                id: 31,
+                text: "first".into(),
+                bbox: [0.0, 0.0, 10.0, 10.0],
+            },
+            PdfWord {
+                id: 47,
+                text: "second".into(),
+                bbox: [10.0, 0.0, 20.0, 10.0],
+            },
+        ];
+        let admitted = admit_table_grid(input, &source);
+        assert!(admitted.cells.is_empty(), "do not invent source cell ownership");
+        assert!(admitted.rows.is_empty(), "do not present an inferred table");
+        assert_eq!(admitted.unplaced.len(), 2);
+        assert_eq!(admitted.unplaced[0].source_cell_id, 31);
+        assert_eq!(admitted.unplaced[1].source_cell_id, 47);
+        assert_eq!(admitted.unplaced[1].bbox, [10.0, 0.0, 20.0, 10.0]);
+    }
 
     #[test]
     fn corrections() {
