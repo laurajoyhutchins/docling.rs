@@ -241,6 +241,42 @@ class SemanticTableTests(unittest.TestCase):
             self.assertEqual(rows[0]["passed"], False)
             self.assertEqual(rows[0]["error_class"], "input_or_reference_integrity")
 
+    def test_reference_integrity_and_impossible_assertions_fail_early(self):
+        # A valid file name is not enough: source bytes and the reviewed
+        # assertion must independently agree with the pinned oracle.
+        import copy
+        import json
+        from tempfile import TemporaryDirectory
+
+        original = json.loads(audit.DEFAULT_CASES.read_text(encoding="utf-8"))
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            for defect in ("wrong_reference_blob", "impossible_binding"):
+                with self.subTest(defect=defect):
+                    manifest = copy.deepcopy(original)
+                    manifest["cases"] = [manifest["cases"][0]]
+                    case = manifest["cases"][0]
+                    if defect == "wrong_reference_blob":
+                        case["reference_git_blob"] = "0" * 40
+                    else:
+                        case["bindings"][0]["cells"][-1]["equals"] = "page 999999"
+                    config = root / f"{defect}.json"
+                    config.write_text(json.dumps(manifest), encoding="utf-8")
+                    report = root / f"{defect}.report.json"
+                    status = audit.main([
+                        "--cases", str(config), "--reference-only",
+                        "--report-only", "--report", str(report),
+                        "--review", str(root / f"{defect}.review.md"),
+                    ])
+                    self.assertEqual(status, 1)
+                    result = json.loads(report.read_text(encoding="utf-8"))
+                    self.assertEqual(result["summary"]["passed_cases"], 0)
+                    self.assertFalse(result["results"][0]["passed"])
+                    self.assertEqual(
+                        result["results"][0]["error_class"],
+                        "input_or_reference_integrity",
+                    )
+
     def test_failed_binding_includes_bounded_minimal_repro(self):
         import semantic_dimensions as dims
         case = {"bindings": [{"name": "rating", "cells": [
