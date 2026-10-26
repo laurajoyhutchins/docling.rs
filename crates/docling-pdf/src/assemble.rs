@@ -4481,6 +4481,43 @@ mod tests {
         assert_eq!(regions[0].label, "text");
     }
 
+    /// A numbered Table caption printed in the same bold face as surrounding
+    /// section headers can receive the classifier label `section_header`.
+    /// Treat the explicit text label as a caption only next to a table;
+    /// do not rewrite arbitrary headings or cross intervening paragraphs.
+    #[test]
+    fn explicitly_numbered_table_caption_mislabeled_as_heading_still_binds() {
+        let cells = vec![cell(
+            "Table 1. Minimum working clearance",
+            50.0, 397.0, 242.0, 412.0,
+        )];
+        let mut regions = vec![
+            region("section_header", 0.99, 50.0, 395.0, 250.0, 414.0),
+            region("table", 0.98, 50.0, 424.0, 460.0, 497.0),
+        ];
+        super::promote_labelled_captions(&mut regions, &cells);
+        assert_eq!(regions[0].label, "caption");
+        assert_eq!(super::pair_graphic_captions(&regions)[1], Some(0));
+
+        // An actual section heading is not relabelled if an intervening
+        // paragraph separates it from the table.
+        let mut distant = vec![
+            region("section_header", 0.99, 50.0, 395.0, 250.0, 414.0),
+            region("text", 0.99, 50.0, 417.0, 400.0, 422.0),
+            region("table", 0.98, 50.0, 424.0, 460.0, 497.0),
+        ];
+        super::promote_labelled_captions(&mut distant, &cells);
+        assert_eq!(distant[0].label, "section_header");
+
+        let cells = vec![cell("Table 1 shows the values", 50.0, 397.0, 250.0, 412.0)];
+        let mut narrative = vec![
+            region("section_header", 0.99, 50.0, 395.0, 250.0, 414.0),
+            region("table", 0.98, 50.0, 424.0, 460.0, 497.0),
+        ];
+        super::promote_labelled_captions(&mut narrative, &cells);
+        assert_eq!(narrative[0].label, "section_header");
+    }
+
     /// Side-by-side figures (`tests/snapshots/latex/…/swa.pdf`): three
     /// pictures in a row, their three captions in a row under them. docling's
     /// run rule binds only the first caption (the one before each other
