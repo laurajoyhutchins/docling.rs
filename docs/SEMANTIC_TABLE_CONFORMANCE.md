@@ -15,7 +15,7 @@ either Docling implementation.
 | Case | Original source page (1-based) | What is checked |
 | --- | --- | --- |
 | IBM REDP-5110 contents | [IBM Redpaper, p. 5](https://www.redbooks.ibm.com/redpapers/pdfs/redp5110.pdf) | Contents titles matched to the correct printed page numbers, in **different table columns on the same row** |
-| OTSL HPO Table 1 | [arXiv:2305.03393, p. 9](https://arxiv.org/pdf/2305.03393) | Language labels and TED/mAP/runtime numbers matched to their proper columns and logical rows |
+| OTSL HPO Table 1 | [arXiv:2305.03393, p. 9](https://arxiv.org/pdf/2305.03393) | Each encoder/decoder configuration matched to its paired OTSL/HTML TED/mAP/runtime values in distinct metric columns on the same row |
 
 The inputs are the existing sampled PDF corpus under
 `tests/data/pdf/sources/`. Each is pinned to its **Git blob SHA-1**, and the
@@ -66,7 +66,13 @@ increasing, nonoverlapping columns with a shared logical row. A row-spanning
 cell can participate on a covered row. Repeated `grid` slots, Markdown pipe
 text, flat concatenations, and values on adjacent rows do not establish
 ownership. Punctuation-only dot leaders are ignored; all letters and digits
-remain significant. The scorer doesn't infer cells or move source words.
+remain significant. **Do not split paired metrics into imaginary cells.**
+The HPO table has one Language cell containing `OTSL HTML`, with one cell per
+metric containing both method values (for example `0.965 0.969`).
+The pinned Python reference JSON agrees. A check demanding that `OTSL` and
+`0.965` appear in *separate* source cells would incorrectly fail even the
+upstream reference; the cases now compare four complete source-defined rows
+and reject swapped columns. The scorer doesn't infer cells or move source words.
 
 Failing rows must be inspected against the original source and the
 model-predicted grid: a source-fidelity failure is not automatically a Rust
@@ -76,7 +82,7 @@ from the ported matching logic before modifying `tf_match.rs`.
 
 ## Boundary
 
-This initial slice validates seven independently reviewed table bindings in
+This initial slice validates eight independently reviewed table bindings in
 two source documents. It does not yet provide full-document text recall,
 coordinate accuracy, regulatory cross-reference testing, or a large statistical
 accuracy claim. Those are additional #11 acceptance criteria, and the new
