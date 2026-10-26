@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:docling-rs:semantic-scorecard:2",
+  "title": "Source-grounded PDF semantic scorecard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "summary",
+    "results",
+    "extraction",
+    "scope"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cases",
+        "passed_cases",
+        "bindings",
+        "passed_bindings"
+      ],
+      "properties": {
+        "cases": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed_cases": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bindings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed_bindings": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "extraction": {
+      "type": "object",
+      "required": [
+        "engine",
+        "cli_args",
+        "input_json_dir"
+      ],
+      "properties": {
+        "engine": {
+          "enum": [
+            "rust",
+            "precomputed_json",
+            "pinned_python_reference"
+          ]
+        },
+        "cli_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "input_json_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "binary_path": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checkout_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "settings": {
+          "type": "object"
+        },
+        "model_asset_candidates": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/caseResult"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "dimension": {
+      "type": "object",
+      "required": [
+        "status",
+        "passed",
+        "total",
+        "checks"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unsupported"
+          ]
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          }
+        },
+        "unit_status": {
+          "enum": [
+            "measured",
+            "unsupported"
+          ]
+        },
+        "unit_facts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unit_reason": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "passed": {
+                "const": 0
+              },
+              "total": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "required": [
+        "name",
+        "passed"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "failure_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected": {
+          "type": [
+            "string",
+            "array"
+          ]
+        },
+        "observed": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "dimension",
+        "name",
+        "class"
+      ],
+      "properties": {
+        "dimension": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "caseResult": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "passed",
+        "failures"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "source_git_blob": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_url": {
+          "type": "string"
+        },
+        "source_rights_status": {
+          "type": "string"
+        },
+        "review_scope": {
+          "type": "string"
+        },
+        "original_pdf_sha256": {
+          "type": "null"
+        },
+        "original_pdf_pages": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "reference_json": {
+          "type": "string"
+        },
+        "reference_git_blob": {
+          "type": "string"
+        },
+        "reference_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reference_compatible": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "error_class": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "dimensions": {
+          "type": "object",
+          "required": [
+            "text_recall",
+            "numbers_units",
+            "table_bindings",
+            "reading_order",
+            "cross_references",
+            "bounding_boxes"
+          ],
+          "properties": {
+            "text_recall": {
+              "$ref": "#/$defs/dimension"
+            },
+            "numbers_units": {
+              "$ref": "#/$defs/dimension"
+            },
+            "table_bindings": {
+              "$ref": "#/$defs/dimension"
+            },
+            "reading_order": {
+              "$ref": "#/$defs/dimension"
+            },
+            "cross_references": {
+              "$ref": "#/$defs/dimension"
+            },
+            "bounding_boxes": {
+              "$ref": "#/$defs/dimension"
+            }
+          },
+          "additionalProperties": false
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/error"
+          }
+        },
+        "minimal_repros": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "unassigned_words": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
