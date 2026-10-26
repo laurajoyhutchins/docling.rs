@@ -76,6 +76,9 @@ def walk(document: dict) -> list[dict]:
             "table_shape": [grid.get("num_rows"), grid.get("num_cols")]
             if bucket == "tables" and isinstance(grid, dict) else None,
             "page": (item.get("prov") or [{}])[0].get("page_no"),
+            # Coordinates are observational evidence, not a logical ownership
+            # rule. Compare them separately, without snapping or tolerance.
+            "bbox": (item.get("prov") or [{}])[0].get("bbox"),
         })
         children = item.get("children", [])
         if children and bucket != "groups":
@@ -116,9 +119,9 @@ def summarize(reference: dict, actual: dict) -> dict:
             "change": tag,
             "reference_range": [i0, i1],
             "actual_range": [j0, j1],
-            "reference": [{k: r[k] for k in ("ref", "label", "bucket", "text", "page", "table_shape")}
+            "reference": [{k: r[k] for k in ("ref", "label", "bucket", "text", "page", "bbox", "table_shape")}
                           for r in old[i0:min(i1, i0 + 3)]],
-            "actual": [{k: r[k] for k in ("ref", "label", "bucket", "text", "page", "table_shape")}
+            "actual": [{k: r[k] for k in ("ref", "label", "bucket", "text", "page", "bbox", "table_shape")}
                        for r in new[j0:min(j1, j0 + 3)]],
         })
     # Correlate identical *unique* source text even when its item index moved.
@@ -129,6 +132,8 @@ def summarize(reference: dict, actual: dict) -> dict:
         counts = Counter(r["text"] for r in rows if r["text"])
         target.update({r["text"]: r for r in rows if r["text"] and counts[r["text"]] == 1})
     classifications = []
+    ownership_changes = []
+    geometry_changes = []
     for text in sorted(old_by_text.keys() & new_by_text.keys()):
         before, after = old_by_text[text], new_by_text[text]
         if before["label"] != after["label"] or before["bucket"] != after["bucket"]:
@@ -137,6 +142,17 @@ def summarize(reference: dict, actual: dict) -> dict:
                 "actual_label": after["label"], "reference_bucket": before["bucket"],
                 "actual_bucket": after["bucket"],
             })
+        if before["owner_path"] != after["owner_path"]:
+            ownership_changes.append({
+                "text": text[:160], "reference_owner": before["owner_path"],
+                "actual_owner": after["owner_path"],
+            })
+        if before["page"] != after["page"] or before["bbox"] != after["bbox"]:
+            geometry_changes.append({
+                "text": text[:160], "reference_page": before["page"],
+                "actual_page": after["page"], "reference_bbox": before["bbox"],
+                "actual_bbox": after["bbox"],
+            })
     return {
         "structurally_equal": a == b,
         "reference_nodes": len(old),
@@ -144,6 +160,8 @@ def summarize(reference: dict, actual: dict) -> dict:
         "reference_classes": shape_counts(old),
         "actual_classes": shape_counts(new),
         "classifications": classifications,
+        "ownership_changes": ownership_changes,
+        "geometry_changes": geometry_changes,
         "ordered_differences": changes,
     }
 
@@ -168,6 +186,8 @@ def main(argv=None) -> int:
         "actual_nodes": result["actual_nodes"],
         "difference_groups": len(result["ordered_differences"]),
         "class_reassignments": len(result["classifications"]),
+        "ownership_changes": len(result["ownership_changes"]),
+        "geometry_changes": len(result["geometry_changes"]),
         "structurally_equal": result["structurally_equal"],
         "report": str(args.out),
     }))
@@ -186,6 +206,10 @@ def main(argv=None) -> int:
         }, ensure_ascii=False))
     for assignment in result["classifications"][:4]:
         print("CLASSIFICATION_DIAGNOSTIC " + json.dumps(assignment, ensure_ascii=False))
+    for assignment in result["ownership_changes"][:4]:
+        print("OWNERSHIP_DIAGNOSTIC " + json.dumps(assignment, ensure_ascii=False))
+    for geometry in result["geometry_changes"][:4]:
+        print("GEOMETRY_DIAGNOSTIC " + json.dumps(geometry, ensure_ascii=False))
     return 1 if args.require_parity and not result["structurally_equal"] else 0
 
 
