@@ -3490,13 +3490,18 @@ pub fn assemble_page(
                     .map(|g| g.ambiguous.clone())
                     .unwrap_or_default();
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
-                    Some(grid) => {
+                    // A TableGrid with no resolved cells carries source
+                    // evidence only; it must not suppress the same geometric
+                    // fallback used when the model returned no grid.
+                    Some(grid) if !grid.rows.is_empty() => {
                         let nrows = grid.rows.len();
                         let ncols = grid.rows.first().map_or(0, Vec::len);
                         let structure = structure_from_cells(&grid.cells, nrows, ncols);
                         (grid.rows, Some(grid.cells), Some(structure))
                     }
-                    None => {
+                    // Includes a model result containing only unplaced words:
+                    // preserve the evidence above, but render the fallback.
+                    _ => {
                         let rows = reconstruct_table(region, &page.cells);
                         let rows = if rows.iter().any(|r| r.len() > 1) {
                             rows
