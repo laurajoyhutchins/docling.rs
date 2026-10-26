@@ -3148,7 +3148,7 @@ mod table_grid_contract_tests {
             cells: Vec::new(),
             unplaced: vec![super::UnplacedTableWord {
                 source_cell_id: 17,
-                text: "480 V".to_string(),
+                text: "480 V & <phase>_".to_string(),
                 bbox: [12.0, 20.0, 50.0, 30.0],
             }],
         };
@@ -3168,6 +3168,15 @@ mod table_grid_contract_tests {
         doc.nodes = nodes;
         let json = doc.export_to_json_value();
         assert_eq!(json["tables"].as_array().map(Vec::len), Some(0));
+        let source_evidence = json.to_string();
+        assert!(
+            source_evidence.contains("480 V & <phase>_"),
+            "source words must not acquire Markdown escapes in JSON evidence"
+        );
+        assert!(
+            source_evidence.contains("source_cell_17"),
+            "source word identity must survive serialization"
+        );
     }
 
     #[test]
@@ -3836,7 +3845,9 @@ pub fn assemble_page(
                                 children: vec![located(
                                     location,
                                     Node::Paragraph {
-                                        text: md_escape(&word.text),
+                                        // Source evidence is not presentation Markdown.
+                                        // Retain the parser's exact word bytes in JSON.
+                                        text: word.text,
                                     },
                                 )],
                             }
