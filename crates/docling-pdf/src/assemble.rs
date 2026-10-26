@@ -2983,6 +2983,19 @@ pub struct TableGrid {
     /// Words from the source PDF within the table's region, but without
     /// evidence for either a row or a column in the predicted grid.
     pub unplaced: Vec<UnplacedTableWord>,
+    /// Independent evidence about an assigned source word with competing
+    /// maximum-overlap table-cell predictions. Never changes visible rows.
+    pub ambiguous: Vec<AmbiguousTableWord>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AmbiguousTableWord {
+    pub source_cell_id: usize,
+    pub text: String,
+    pub bbox: [f32; 4],
+    pub selected_cell_id: usize,
+    pub competing_cell_ids: Vec<usize>,
+    pub overlap_score: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -3472,14 +3485,23 @@ pub fn assemble_page(
                     .as_ref()
                     .map(|g| g.unplaced.clone())
                     .unwrap_or_default();
+                let ambiguous = table_rows[i]
+                    .as_ref()
+                    .map(|g| g.ambiguous.clone())
+                    .unwrap_or_default();
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
-                    Some(grid) => {
+                    // A TableGrid with no resolved cells carries source
+                    // evidence only; it must not suppress the same geometric
+                    // fallback used when the model returned no grid.
+                    Some(grid) if !grid.rows.is_empty() => {
                         let nrows = grid.rows.len();
                         let ncols = grid.rows.first().map_or(0, Vec::len);
                         let structure = structure_from_cells(&grid.cells, nrows, ncols);
                         (grid.rows, Some(grid.cells), Some(structure))
                     }
-                    None => {
+                    // Includes a model result containing only unplaced words:
+                    // preserve the evidence above, but render the fallback.
+                    _ => {
                         let rows = reconstruct_table(region, &page.cells);
                         let rows = if rows.iter().any(|r| r.len() > 1) {
                             rows
@@ -3614,6 +3636,53 @@ pub fn assemble_page(
                     nodes.push(Node::Group {
                         label: "unplaced_table_text".into(),
                         name: Some(format!("table_region_{i}_unplaced_words")),
+                        layer: Some(docling_core::ContentLayer::Invisible),
+                        children,
+                    });
+                }
+                // An equal-overlap tie is source uncertainty, not permission
+                // to remove the chosen word from the published table. Record
+                // both the actual cell choice and all equally scored competing
+                // predictions on the independent invisible evidence layer.
+                if !ambiguous.is_empty() {
+                    let children = ambiguous
+                        .into_iter()
+                        .map(|word| {
+                            let coord = |v: f32, extent: f32| -> u16 {
+                                if extent <= 0.0 {
+                                    return 0;
+                                }
+                                ((512.0 * f64::from(v) / f64::from(extent)).round() as i64)
+                                    .clamp(0, 511) as u16
+                            };
+                            let location = [
+                                coord(word.bbox[0], page.width),
+                                coord(word.bbox[1], page_h),
+                                coord(word.bbox[2], page.width),
+                                coord(word.bbox[3], page_h),
+                            ];
+                            Node::Group {
+                                label: "ambiguous_table_cell_assignment".into(),
+                                name: Some(format!(
+                                    "source_cell_{}_chosen_{}_competing_{:?}_score_{:.17}",
+                                    word.source_cell_id,
+                                    word.selected_cell_id,
+                                    word.competing_cell_ids,
+                                    word.overlap_score
+                                )),
+                                layer: None,
+                                children: vec![located(
+                                    location,
+                                    Node::Paragraph {
+                                        text: md_escape(&word.text),
+                                    },
+                                )],
+                            }
+                        })
+                        .collect();
+                    nodes.push(Node::Group {
+                        label: "table_assignment_ambiguities".into(),
+                        name: Some(format!("table_region_{i}_ambiguous_words")),
                         layer: Some(docling_core::ContentLayer::Invisible),
                         children,
                     });

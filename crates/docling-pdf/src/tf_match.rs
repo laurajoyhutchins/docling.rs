@@ -329,20 +329,60 @@ fn deduplicate_cells(
     (new_table_cells, new_matches)
 }
 
-/// Step 8: `_do_final_asignment` — each word keeps only its highest-scoring
-/// match (Python's `max` keeps the first of equals).
-fn do_final_assignment(ioc_matches: &Matches) -> Matches {
+/// A tied maximum across distinct predicted model cells. This is source
+/// evidence, not a reason to remove an assigned word from visible output.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbiguousMatch {
+    pub pdf_id: usize,
+    pub chosen_cell_id: usize,
+    pub competing_cell_ids: Vec<usize>,
+    pub score: f64,
+}
+
+/// Python Docling chooses the first maximum. Preserve that visible assignment
+/// and retain equal-overlap cross-slot alternatives as separate evidence.
+fn do_final_assignment(
+    ioc_matches: &Matches,
+    table_cells: &[TfCell],
+) -> (Matches, Vec<AmbiguousMatch>) {
+    let slot_for: BTreeMap<usize, (usize, usize)> = table_cells
+        .iter()
+        .map(|c| (c.cell_id, (c.row_id, c.column_id)))
+        .collect();
     let mut new_matches: Matches = BTreeMap::new();
+    let mut ambiguous_words = Vec::new();
     for (&pdf_id, list) in ioc_matches {
-        let mut best = &list[0];
+        let Some(mut best) = list.first() else {
+            continue;
+        };
         for m in &list[1..] {
             if m.score > best.score {
                 best = m;
             }
         }
+        let best_slot = slot_for.get(&best.table_cell_id);
+        let mut competitors: Vec<usize> = list
+            .iter()
+            .filter(|other| {
+                other.table_cell_id != best.table_cell_id
+                    && other.score == best.score
+                    && (best_slot.is_none() || slot_for.get(&other.table_cell_id) != best_slot)
+            })
+            .map(|other| other.table_cell_id)
+            .collect();
+        competitors.sort_unstable();
+        competitors.dedup();
+        if !competitors.is_empty() {
+            ambiguous_words.push(AmbiguousMatch {
+                pdf_id,
+                chosen_cell_id: best.table_cell_id,
+                competing_cell_ids: competitors,
+                score: best.score,
+            });
+        }
         new_matches.insert(pdf_id, vec![best.clone()]);
     }
-    new_matches
+    (new_matches, ambiguous_words)
 }
 
 /// Step 8.a: `_align_table_cells_to_pdf` — matched cells take the union box
@@ -576,10 +616,10 @@ fn pick_orphan_cells(
 /// `MatchingPostProcessor.process` with docling's defaults
 /// (`correct_overlapping_cells=False`): returns the post-processed table
 /// cells and the final one-cell-per-word matches.
-pub fn match_and_post_process_with_unplaced(
+pub fn match_and_post_process_with_evidence(
     table_cells: Vec<TfCell>,
     pdf_cells: &[PdfWord],
-) -> (Vec<TfCell>, Matches, Vec<PdfWord>) {
+) -> (Vec<TfCell>, Matches, Vec<PdfWord>, Vec<AmbiguousMatch>) {
     let matches = intersection_over_pdf_match(&table_cells, pdf_cells);
 
     let (tab_columns, tab_rows, max_cell_id) = get_table_dimension(&table_cells);
@@ -605,7 +645,7 @@ pub fn match_and_post_process_with_unplaced(
     let (dedupl_cells, dedupl_matches) = deduplicate_cells(tab_columns, &fixed, &matches, &ioc);
 
     // Step 8: one table cell per word.
-    let final_matches = do_final_assignment(&dedupl_matches);
+    let (final_matches, ambiguities) = do_final_assignment(&dedupl_matches, &dedupl_cells);
 
     // Step 8.a: align cell boxes to their matched words (dropping unmatched
     // cells) — skipped for large pages, as in the source.
@@ -632,7 +672,18 @@ pub fn match_and_post_process_with_unplaced(
         .filter(|w| !w.text.trim().is_empty() && !final_matches.contains_key(&w.id))
         .cloned()
         .collect();
-    (cells_wo, final_matches, unplaced)
+    (cells_wo, final_matches, unplaced, ambiguities)
+}
+
+/// Keep the existing API while separating genuinely unplaced words from
+/// assigned words whose equal-score competitors were recorded as evidence.
+pub fn match_and_post_process_with_unplaced(
+    table_cells: Vec<TfCell>,
+    pdf_cells: &[PdfWord],
+) -> (Vec<TfCell>, Matches, Vec<PdfWord>) {
+    let (cells, matches, unplaced, _) =
+        match_and_post_process_with_evidence(table_cells, pdf_cells);
+    (cells, matches, unplaced)
 }
 
 /// Retain the two-output API for callers that explicitly want only the
@@ -706,6 +757,122 @@ mod tests {
         let words = [word(5, "assigned", 400.0, 100.0)];
         let (result, _, _) = pick_orphan_cells(1, 1, 0, vec![cell(0, 0, 10.0)], &words, matches);
         assert_eq!(result[&5], vec![original]);
+    }
+
+    #[test]
+    fn cross_slot_tie_preserves_docling_first_maximum_with_separate_evidence() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let matches = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.5,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
+        let (assigned, ties) = do_final_assignment(&matches, &cells);
+        assert_eq!(assigned[&7][0].table_cell_id, 0);
+        assert_eq!(ties.len(), 1);
+        assert_eq!(ties[0].pdf_id, 7);
+        assert_eq!(ties[0].chosen_cell_id, 0);
+        assert_eq!(ties[0].competing_cell_ids, vec![1]);
+        assert_eq!(ties[0].score, 0.5);
+        let mut reversed = matches;
+        reversed.get_mut(&7).unwrap().reverse();
+        let (assigned, ties) = do_final_assignment(&reversed, &cells);
+        assert_eq!(assigned[&7][0].table_cell_id, 1);
+        assert_eq!(ties[0].competing_cell_ids, vec![0]);
+    }
+
+    #[test]
+    fn unique_stronger_cell_still_owns_its_word() {
+        let predicted = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let candidates = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.51,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
+        let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
+        assert!(ambiguous.is_empty());
+        assert_eq!(assigned[&7][0].table_cell_id, 0);
+    }
+
+    #[test]
+    fn duplicate_predictions_of_one_grid_slot_do_not_hide_source_text() {
+        let mut duplicate = cell(1, 0, 10.0);
+        duplicate.row_id = 0;
+        let predicted = vec![cell(0, 0, 10.0), duplicate];
+        let candidates = Matches::from([(
+            7,
+            vec![
+                MatchEntry {
+                    table_cell_id: 0,
+                    score: 0.5,
+                },
+                MatchEntry {
+                    table_cell_id: 1,
+                    score: 0.5,
+                },
+            ],
+        )]);
+        let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
+        assert!(ambiguous.is_empty());
+        assert_eq!(assigned[&7][0].table_cell_id, 0);
+    }
+
+    #[test]
+    fn orphan_pass_does_not_reassign_a_tied_first_maximum() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let source = PdfWord {
+            id: 7,
+            bbox: [40.0, 15.0, 140.0, 23.0],
+            text: "source-wide leader".into(),
+        };
+        let chosen = MatchEntry {
+            table_cell_id: 0,
+            score: 0.5,
+        };
+        let matches = Matches::from([(7, vec![chosen.clone()])]);
+        let (result, _, _) = pick_orphan_cells(1, 2, 1, cells, &[source], matches);
+        assert_eq!(result[&7], vec![chosen]);
+    }
+
+    #[test]
+    fn tied_leader_remains_in_visible_table_and_has_source_evidence() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let leader = PdfWord {
+            id: 7,
+            bbox: [65.0, 15.0, 115.0, 23.0],
+            text: ". . . . .".into(),
+        };
+        let words = [
+            word(1, "Notices", 20.0, 15.0),
+            word(2, "vii", 130.0, 15.0),
+            leader.clone(),
+        ];
+        let (_, matches, unplaced, ties) = match_and_post_process_with_evidence(cells, &words);
+        assert!(matches.contains_key(&1));
+        assert!(matches.contains_key(&2));
+        assert!(
+            matches.contains_key(&7),
+            "source text must stay in the visible grid"
+        );
+        assert!(!unplaced.iter().any(|word| word.id == leader.id));
+        assert_eq!(ties.len(), 1);
+        assert_eq!(ties[0].pdf_id, leader.id);
     }
 
     #[test]
