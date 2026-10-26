@@ -3104,27 +3104,42 @@ mod table_grid_contract_tests {
     fn invalid_spans_and_overflows_are_rejected() {
         let mut table = example();
         table.cells[0].col_span = 0;
-        assert!(table.validate_cell_ownership().unwrap_err().contains("zero-length"));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("zero-length"));
 
         let mut table = example();
         table.cells[0].start_row = usize::MAX;
         table.cells[0].row_span = 2;
-        assert!(table.validate_cell_ownership().unwrap_err().contains("overflow"));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("overflow"));
 
         let mut table = example();
         table.cells[0].col_span = 4;
-        assert!(table.validate_cell_ownership().unwrap_err().contains("outside"));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("outside"));
     }
 
     #[test]
     fn invalid_geometry_or_wrong_dense_text_is_rejected() {
         let mut table = example();
         table.cells[0].bbox = Some([f32::NAN, 0.0, 10.0, 10.0]);
-        assert!(table.validate_cell_ownership().unwrap_err().contains("bounding box"));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("bounding box"));
 
         let mut table = example();
         table.rows[0][1] = "wrong".into();
-        assert!(table.validate_cell_ownership().unwrap_err().contains("disagrees"));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("disagrees"));
     }
 
     #[test]
@@ -3161,9 +3176,12 @@ mod table_grid_contract_tests {
             }),
             "a rejected grid must never become a real table: {nodes:?}"
         );
-        assert!(nodes.iter().any(|n| {
-            matches!(n, Node::Group { label, .. } if label == "unplaced_table_text")
-        }), "unplaced source words must survive assembly: {nodes:?}");
+        assert!(
+            nodes.iter().any(|n| {
+                matches!(n, Node::Group { label, .. } if label == "unplaced_table_text")
+            }),
+            "unplaced source words must survive assembly: {nodes:?}"
+        );
         let mut doc = docling_core::DoclingDocument::new("unsupported");
         doc.nodes = nodes;
         let json = doc.export_to_json_value();
@@ -3697,9 +3715,9 @@ pub fn assemble_page(
                     .unwrap_or_default();
                 // A rejected prediction is an evidence-only result, never an
                 // empty but apparently authoritative table in JSON/Markdown.
-                let rejected_table = table_rows[i].as_ref().is_some_and(|g| {
-                    g.rows.is_empty() && g.cells.is_empty()
-                });
+                let rejected_table = table_rows[i]
+                    .as_ref()
+                    .is_some_and(|g| g.rows.is_empty() && g.cells.is_empty());
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
                     Some(_) if rejected_table => (Vec::new(), None, None),
                     Some(grid) => {
