@@ -2724,7 +2724,15 @@ fn promote_labelled_captions(regions: &mut [Region], cells: &[TextCell]) {
             continue;
         }
         let beside = |g: &Region| {
-            is_graphic(g.label) && g.r.min(r.r) - g.l.max(r.l) > 0.0 && {
+            // A classifier-labelled heading must not turn into a figure or
+            // code caption merely because it is nearby. The independent PDF
+            // case establishes a numbered *table* caption, not a generic
+            // heading-to-graphic relationship.
+            (if r.label == "section_header" {
+                is_table_like(g.label) && region_text(r, cells).trim_start().starts_with("Table ")
+            } else {
+                is_graphic(g.label)
+            }) && g.r.min(r.r) - g.l.max(r.l) > 0.0 && {
                 let gap = if r.t >= g.b {
                     r.t - g.b
                 } else if g.t >= r.b {
@@ -4518,6 +4526,29 @@ mod tests {
         ];
         super::promote_labelled_captions(&mut narrative, &cells);
         assert_eq!(narrative[0].label, "section_header");
+
+        // A numbered table-like heading beside a picture is still not
+        // evidence that it captions that picture.
+        let cells = vec![cell(
+            "Table 1. Minimum working clearance",
+            50.0, 397.0, 242.0, 412.0,
+        )];
+        let mut figure = vec![
+            region("section_header", 0.99, 50.0, 395.0, 250.0, 414.0),
+            region("picture", 0.98, 50.0, 424.0, 460.0, 497.0),
+        ];
+        super::promote_labelled_captions(&mut figure, &cells);
+        assert_eq!(figure[0].label, "section_header");
+
+        // Without the explicit Table prefix, even an adjacent table cannot
+        // reclassify a section heading as a caption.
+        let cells = vec![cell("Figure 1. Overview", 50.0, 397.0, 242.0, 412.0)];
+        let mut wrong_kind = vec![
+            region("section_header", 0.99, 50.0, 395.0, 250.0, 414.0),
+            region("table", 0.98, 50.0, 424.0, 460.0, 497.0),
+        ];
+        super::promote_labelled_captions(&mut wrong_kind, &cells);
+        assert_eq!(wrong_kind[0].label, "section_header");
     }
 
     /// Side-by-side figures (`tests/snapshots/latex/…/swa.pdf`): three
