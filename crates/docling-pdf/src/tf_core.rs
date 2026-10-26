@@ -885,9 +885,13 @@ mod tests {
                 .contains("text disagrees")
         );
         cell.text = "10 HP".into();
-        assert!(validate_word_partition(&source, &[vec![7, 7]], &[cell.clone()], &unplaced).is_err());
+        assert!(
+            validate_word_partition(&source, &[vec![7, 7]], &[cell.clone()], &unplaced).is_err()
+        );
         assert!(validate_word_partition(&source, &[vec![9]], &[cell.clone()], &unplaced).is_err());
-        assert!(validate_word_partition(&source, &[vec![7, 8]], &[cell.clone()], &unplaced).is_err());
+        assert!(
+            validate_word_partition(&source, &[vec![7, 8]], &[cell.clone()], &unplaced).is_err()
+        );
         assert!(validate_word_partition(&source, &assignments, &[cell.clone()], &[]).is_err());
         assert!(validate_word_partition(&source, &[], &[cell.clone()], &unplaced).is_err());
 
