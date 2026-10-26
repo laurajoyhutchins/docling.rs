@@ -184,6 +184,21 @@ def main(argv: list[str] | None = None) -> int:
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"report": str(out / "report.json"), "repeatable": not unstable,
                       "conversions_succeeded": not failures, "cases": len(report["cases"])}))
+    # Produce bounded diagnostic readback in the owning repository. External CI
+    # invokes this tool but never parses its internal JSON report as an
+    # unversioned cross-repository data contract.
+    for case in report["cases"]:
+        print("PAIRED_REPRO " + json.dumps({
+            "source": case["source"],
+            "source_sha256": case["source_sha256"],
+            "stable": case["stable"],
+            "changed_lines": case["changed_lines"],
+            "runs": {name: [{"sha256": r.get("sha256"),
+                              "groundtruth_changed_lines": r.get("groundtruth_changed_lines"),
+                              "error": r.get("error")}
+                             for r in attempts]
+                     for name, attempts in case["runs"].items()},
+        }))
     return 0 if not unstable and not failures else 1
 
 
