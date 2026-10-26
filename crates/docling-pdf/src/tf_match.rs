@@ -329,23 +329,28 @@ fn deduplicate_cells(
     (new_table_cells, new_matches)
 }
 
-/// Step 8: prefer the highest-scoring overlap, as docling does, *unless*
-/// two distinct logical cells have exactly the same evidence for a word.
-/// Python's `max` silently chooses the first equal score. That makes cell
-/// ownership depend on iteration order for a genuinely ambiguous source
-/// observation. Leave only those cross-slot ties unplaced so the caller's
-/// existing invisible evidence layer retains the word and its source box.
-/// Ties between duplicate predictions of the *same* grid slot are harmless.
+/// A tied maximum across distinct predicted model cells. This is source
+/// evidence, not a reason to remove an assigned word from visible output.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbiguousMatch {
+    pub pdf_id: usize,
+    pub chosen_cell_id: usize,
+    pub competing_cell_ids: Vec<usize>,
+    pub score: f64,
+}
+
+/// Python Docling chooses the first maximum. Preserve that visible assignment
+/// and retain equal-overlap cross-slot alternatives as separate evidence.
 fn do_final_assignment(
     ioc_matches: &Matches,
     table_cells: &[TfCell],
-) -> (Matches, std::collections::BTreeSet<usize>) {
+) -> (Matches, Vec<AmbiguousMatch>) {
     let slot_for: BTreeMap<usize, (usize, usize)> = table_cells
         .iter()
         .map(|c| (c.cell_id, (c.row_id, c.column_id)))
         .collect();
     let mut new_matches: Matches = BTreeMap::new();
-    let mut ambiguous_words = std::collections::BTreeSet::new();
+    let mut ambiguous_words = Vec::new();
     for (&pdf_id, list) in ioc_matches {
         let Some(mut best) = list.first() else {
             continue;
@@ -356,18 +361,27 @@ fn do_final_assignment(
             }
         }
         let best_slot = slot_for.get(&best.table_cell_id);
-        // An absent slot is not evidence of equivalence. This check applies
-        // only to exact ties; a genuine stronger overlap is still assigned.
-        let ambiguous = list.iter().any(|other| {
-            other.table_cell_id != best.table_cell_id
-                && other.score == best.score
-                && (best_slot.is_none() || slot_for.get(&other.table_cell_id) != best_slot)
-        });
-        if ambiguous {
-            ambiguous_words.insert(pdf_id);
-        } else {
-            new_matches.insert(pdf_id, vec![best.clone()]);
+        let mut competitors: Vec<usize> = list
+            .iter()
+            .filter(|other| {
+                other.table_cell_id != best.table_cell_id
+                    && other.score == best.score
+                    && (best_slot.is_none()
+                        || slot_for.get(&other.table_cell_id) != best_slot)
+            })
+            .map(|other| other.table_cell_id)
+            .collect();
+        competitors.sort_unstable();
+        competitors.dedup();
+        if !competitors.is_empty() {
+            ambiguous_words.push(AmbiguousMatch {
+                pdf_id,
+                chosen_cell_id: best.table_cell_id,
+                competing_cell_ids: competitors,
+                score: best.score,
+            });
         }
+        new_matches.insert(pdf_id, vec![best.clone()]);
     }
     (new_matches, ambiguous_words)
 }
@@ -509,7 +523,6 @@ fn pick_orphan_cells(
     mut table_cells: Vec<TfCell>,
     pdf_cells: &[PdfWord],
     mut matches: Matches,
-    explicitly_ambiguous: &std::collections::BTreeSet<usize>,
 ) -> (Matches, Vec<TfCell>, usize) {
     // NOTE: docling's row-band pass exposes an aliasing quirk — the band's
     // orphan test reads `matches` as it was on entry (orphans found later
@@ -560,12 +573,6 @@ fn pick_orphan_cells(
 
     // Ascending pdf id, matching the sorted C++-parity loop in the source.
     for (&pdf_id, &new_row_id) in row_of.iter() {
-        // A cross-slot exact tie was deliberately left unresolved. The
-        // orphan band heuristic has no stronger evidence and must not assign
-        // that source word again through an arbitrary nearest-cell fallback.
-        if explicitly_ambiguous.contains(&pdf_id) {
-            continue;
-        }
         let Some(&(new_column_id, confidence, pdf_bbox)) = col_of.get(&pdf_id) else {
             continue;
         };
@@ -610,10 +617,10 @@ fn pick_orphan_cells(
 /// `MatchingPostProcessor.process` with docling's defaults
 /// (`correct_overlapping_cells=False`): returns the post-processed table
 /// cells and the final one-cell-per-word matches.
-pub fn match_and_post_process_with_unplaced(
+pub fn match_and_post_process_with_evidence(
     table_cells: Vec<TfCell>,
     pdf_cells: &[PdfWord],
-) -> (Vec<TfCell>, Matches, Vec<PdfWord>) {
+) -> (Vec<TfCell>, Matches, Vec<PdfWord>, Vec<AmbiguousMatch>) {
     let matches = intersection_over_pdf_match(&table_cells, pdf_cells);
 
     let (tab_columns, tab_rows, max_cell_id) = get_table_dimension(&table_cells);
@@ -639,7 +646,7 @@ pub fn match_and_post_process_with_unplaced(
     let (dedupl_cells, dedupl_matches) = deduplicate_cells(tab_columns, &fixed, &matches, &ioc);
 
     // Step 8: one table cell per word.
-    let (final_matches, ambiguous_words) = do_final_assignment(&dedupl_matches, &dedupl_cells);
+    let (final_matches, ambiguities) = do_final_assignment(&dedupl_matches, &dedupl_cells);
 
     // Step 8.a: align cell boxes to their matched words (dropping unmatched
     // cells) — skipped for large pages, as in the source.
@@ -660,14 +667,24 @@ pub fn match_and_post_process_with_unplaced(
         aligned,
         pdf_cells,
         final_matches,
-        &ambiguous_words,
     );
     let unplaced: Vec<PdfWord> = pdf_cells
         .iter()
         .filter(|w| !w.text.trim().is_empty() && !final_matches.contains_key(&w.id))
         .cloned()
         .collect();
-    (cells_wo, final_matches, unplaced)
+    (cells_wo, final_matches, unplaced, ambiguities)
+}
+
+/// Keep the existing API while separating genuinely unplaced words from
+/// assigned words whose equal-score competitors were recorded as evidence.
+pub fn match_and_post_process_with_unplaced(
+    table_cells: Vec<TfCell>,
+    pdf_cells: &[PdfWord],
+) -> (Vec<TfCell>, Matches, Vec<PdfWord>) {
+    let (cells, matches, unplaced, _) =
+        match_and_post_process_with_evidence(table_cells, pdf_cells);
+    (cells, matches, unplaced)
 }
 
 /// Retain the two-output API for callers that explicitly want only the
@@ -714,7 +731,7 @@ mod tests {
             word(4, "outside both", 300.0, 90.0),
         ];
         let (matches, cells, _) =
-            pick_orphan_cells(1, 2, 1, cells, &words, Matches::new(), &Default::default());
+            pick_orphan_cells(1, 2, 1, cells, &words, Matches::new());
         assert_eq!(matches.len(), 1, "grid owns only a two-axis match");
         assert!(matches.contains_key(&1));
         for id in [2, 3, 4] {
@@ -728,7 +745,7 @@ mod tests {
     fn orphan_without_any_geometric_anchor_remains_explicitly_unrecoverable() {
         let words = [word(1, "unknown location", 400.0, 100.0)];
         let (matches, cells, _) =
-            pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new(), &Default::default());
+            pick_orphan_cells(1, 1, 0, vec![], &words, Matches::new());
         assert!(matches.is_empty(), "do not invent a table grid");
         assert!(cells.is_empty());
     }
@@ -748,33 +765,29 @@ mod tests {
             vec![cell(0, 0, 10.0)],
             &words,
             matches,
-            &Default::default(),
         );
         assert_eq!(result[&5], vec![original]);
     }
 
     #[test]
-    fn exact_cross_column_tie_does_not_invent_cell_ownership() {
-        let predicted = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
-        let candidates = Matches::from([(
-            7,
-            vec![
-                MatchEntry {
-                    table_cell_id: 0,
-                    score: 0.5,
-                },
-                MatchEntry {
-                    table_cell_id: 1,
-                    score: 0.5,
-                },
-            ],
-        )]);
-        let (assigned, ambiguous) = do_final_assignment(&candidates, &predicted);
-        assert!(!assigned.contains_key(&7), "cross-column tie is not a fact");
-        assert!(
-            ambiguous.contains(&7),
-            "retain the explicit no-ownership evidence"
-        );
+    fn cross_slot_tie_preserves_docling_first_maximum_with_separate_evidence() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let matches = Matches::from([(7, vec![
+            MatchEntry { table_cell_id: 0, score: 0.5 },
+            MatchEntry { table_cell_id: 1, score: 0.5 },
+        ])]);
+        let (assigned, ties) = do_final_assignment(&matches, &cells);
+        assert_eq!(assigned[&7][0].table_cell_id, 0);
+        assert_eq!(ties.len(), 1);
+        assert_eq!(ties[0].pdf_id, 7);
+        assert_eq!(ties[0].chosen_cell_id, 0);
+        assert_eq!(ties[0].competing_cell_ids, vec![1]);
+        assert_eq!(ties[0].score, 0.5);
+        let mut reversed = matches;
+        reversed.get_mut(&7).unwrap().reverse();
+        let (assigned, ties) = do_final_assignment(&reversed, &cells);
+        assert_eq!(assigned[&7][0].table_cell_id, 1);
+        assert_eq!(ties[0].competing_cell_ids, vec![0]);
     }
 
     #[test]
@@ -822,31 +835,21 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_word_is_not_recovered_by_orphan_band_fallback() {
-        let predicted = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
-        let source_word = PdfWord {
+    fn orphan_pass_does_not_reassign_a_tied_first_maximum() {
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let source = PdfWord {
             id: 7,
             bbox: [40.0, 15.0, 140.0, 23.0],
             text: "source-wide leader".into(),
         };
-        let excluded = std::collections::BTreeSet::from([7]);
-        let (matches, _, _) = pick_orphan_cells(
-            1,
-            2,
-            1,
-            predicted,
-            &[source_word],
-            Matches::new(),
-            &excluded,
-        );
-        assert!(matches.is_empty(), "do not restore ambiguous membership");
+        let chosen = MatchEntry { table_cell_id: 0, score: 0.5 };
+        let matches = Matches::from([(7, vec![chosen.clone()])]);
+        let (result, _, _) = pick_orphan_cells(1, 2, 1, cells, &[source], matches);
+        assert_eq!(result[&7], vec![chosen]);
     }
 
     #[test]
-    fn source_word_with_equal_cell_evidence_survives_as_unplaced() {
-        // Both grid columns have independent source words, so column
-        // deduplication cannot erase the competing assignments. The long
-        // third word overlaps both columns by the same positive area.
+    fn tied_leader_remains_in_visible_table_and_has_source_evidence() {
         let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
         let leader = PdfWord {
             id: 7,
@@ -858,14 +861,13 @@ mod tests {
             word(2, "vii", 130.0, 15.0),
             leader.clone(),
         ];
-        let (_, matches, unplaced) = match_and_post_process_with_unplaced(cells, &words);
-        assert!(matches.contains_key(&1), "left column remains readable");
-        assert!(matches.contains_key(&2), "right column remains readable");
-        assert!(!matches.contains_key(&7), "leader has no defensible owner");
-        assert_eq!(unplaced.len(), 1);
-        assert_eq!(unplaced[0].id, leader.id);
-        assert_eq!(unplaced[0].text, leader.text);
-        assert_eq!(unplaced[0].bbox, leader.bbox);
+        let (_, matches, unplaced, ties) = match_and_post_process_with_evidence(cells, &words);
+        assert!(matches.contains_key(&1));
+        assert!(matches.contains_key(&2));
+        assert!(matches.contains_key(&7), "source text must stay in the visible grid");
+        assert!(!unplaced.iter().any(|word| word.id == leader.id));
+        assert_eq!(ties.len(), 1);
+        assert_eq!(ties[0].pdf_id, leader.id);
     }
 
     #[test]
