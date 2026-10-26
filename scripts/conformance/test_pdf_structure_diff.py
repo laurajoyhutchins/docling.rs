@@ -54,6 +54,27 @@ class PdfStructureTests(unittest.TestCase):
         self.assertTrue(result["ordered_differences"])
         self.assertFalse(result["classifications"])
 
+    def test_owner_position_is_not_reduced_to_tree_depth(self):
+        original = document()
+        original["body"]["children"].append({"$ref": "#/groups/1"})
+        original["groups"].append({
+            "label": "form_area", "parent": {"$ref": "#/body"},
+            "children": [{"$ref": "#/texts/2"}],
+        })
+        original["texts"].append({
+            "label": "text", "text": "Sibling form", "parent": {"$ref": "#/groups/1"},
+        })
+        changed = copy.deepcopy(original)
+        changed["groups"][0]["children"].pop()
+        changed["groups"][1]["children"].insert(0, {"$ref": "#/texts/1"})
+        changed["texts"][1]["parent"] = {"$ref": "#/groups/1"}
+        before = mod.walk(original)
+        after = mod.walk(changed)
+        owner = lambda rows: next(r["owner_path"] for r in rows if r["text"] == "Source citation")
+        self.assertEqual(len(owner(before)), len(owner(after)))
+        self.assertNotEqual(owner(before), owner(after))
+        self.assertFalse(mod.summarize(original, changed)["structurally_equal"])
+
     def test_dangling_reference_fails_closed(self):
         broken = document()
         broken["groups"][0]["children"][0] = {"$ref": "#/texts/999"}
