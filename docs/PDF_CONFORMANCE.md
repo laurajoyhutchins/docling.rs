@@ -1486,6 +1486,26 @@ python3 scripts/conformance/pdf_repro.py \
   --out target/pdf-repro
 ```
 
+**Page-pixel renderer differential (#22).** The companion, model-independent
+Rust example uses the already public PDF page renderer to write 1× page PNGs
+for two independent processes. It quantifies differing pixels, the maximum
+per-channel error (0–255), and mean absolute per-channel error; unequal
+dimensions fail rather than being mislabeled identical.
+
+```bash
+cargo build --release --locked -p docling-pdf --example renderer_diff
+DOCLING_RS_RENDERER=rust \
+  target/release/examples/renderer_diff render input.pdf /tmp/page-rust.png 1
+DOCLING_RS_RENDERER=docling-parse \
+  target/release/examples/renderer_diff render input.pdf /tmp/page-parse.png 1
+target/release/examples/renderer_diff compare /tmp/page-rust.png /tmp/page-parse.png
+```
+
+This is a pixel-level test, distinct from the Markdown/JSON semantics test
+above. A nonzero pixel difference is recorded, not treated as proof that
+either renderer is wrong. Original PDF and independent model predictions
+must be reviewed before altering the renderer or the reference baselines.
+
 To isolate renderer changes (#22), pass **the same binary** for both
 variants and set `--baseline-renderer rust --candidate-renderer docling-parse`.
 To isolate source changes, use the same renderer for both variants. For
