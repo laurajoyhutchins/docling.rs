@@ -60,7 +60,8 @@ impl DeclarativeBackend for DoclingJsonBackend {
             // Page sizes already have a typed representation. Keep them in
             // nodes, where the existing JSON tree writer reads them, instead
             // of treating otherwise-safe PDF-derived text as unrepresentable.
-            doc.nodes.extend(text_only_page_markers(&root).unwrap_or_default());
+            doc.nodes
+                .extend(text_only_page_markers(&root).unwrap_or_default());
             doc.tree = Some(tree);
         }
         Ok(doc)
@@ -77,13 +78,20 @@ fn text_only_page_markers(root: &Value) -> Option<Vec<Node>> {
     let mut markers = Vec::new();
     for (key, item) in pages.as_object()? {
         let page_no: usize = key.parse().ok()?;
-        if page_no == 0 || item.as_object()?.keys().any(|k| !matches!(
-            k.as_str(), "page_no" | "size"
-        )) || item.get("page_no")?.as_u64()? != page_no as u64 {
+        if page_no == 0
+            || item
+                .as_object()?
+                .keys()
+                .any(|k| !matches!(k.as_str(), "page_no" | "size"))
+            || item.get("page_no")?.as_u64()? != page_no as u64
+        {
             return None;
         }
         let size = item.get("size")?.as_object()?;
-        if size.keys().any(|k| !matches!(k.as_str(), "width" | "height")) {
+        if size
+            .keys()
+            .any(|k| !matches!(k.as_str(), "width" | "height"))
+        {
             return None;
         }
         let dimension = |k: &str| -> Option<f32> {
@@ -116,10 +124,17 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
     use docling_core::{ContentLayer, Script};
 
     for bucket in [
-        "tables", "pictures", "field_regions", "field_items",
-        "form_items", "key_value_items",
+        "tables",
+        "pictures",
+        "field_regions",
+        "field_items",
+        "form_items",
+        "key_value_items",
     ] {
-        if root.get(bucket).is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty)) {
+        if root
+            .get(bucket)
+            .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+        {
             return None;
         }
     }
@@ -132,7 +147,8 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
     }
     // Retain all content layers, not just the body. The flat reader does not
     // currently assemble a separate furniture tree.
-    if root.get("furniture")
+    if root
+        .get("furniture")
         .and_then(|v| v.get("children"))
         .and_then(Value::as_array)
         .is_some_and(|children| !children.is_empty())
@@ -150,52 +166,92 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
     }
     let mut tree = ItemTree::default();
     let layer_of = |item: &Value| -> Option<Option<ContentLayer>> {
-        Some(match item.get("content_layer").and_then(Value::as_str).unwrap_or("body") {
-            "body" => None,
-            "furniture" => Some(ContentLayer::Furniture),
-            "notes" => Some(ContentLayer::Notes),
-            "invisible" => Some(ContentLayer::Invisible),
-            _ => return None,
-        })
+        Some(
+            match item
+                .get("content_layer")
+                .and_then(Value::as_str)
+                .unwrap_or("body")
+            {
+                "body" => None,
+                "furniture" => Some(ContentLayer::Furniture),
+                "notes" => Some(ContentLayer::Notes),
+                "invisible" => Some(ContentLayer::Invisible),
+                _ => return None,
+            },
+        )
     };
     for (index, item) in texts.iter().enumerate() {
         let o = item.as_object()?;
-        if o.keys().any(|k| !matches!(
-            k.as_str(),
-            "self_ref" | "parent" | "children" | "content_layer" | "label" |
-            "text" | "orig" | "formatting" | "hyperlink" | "level" |
-            "enumerated" | "marker" | "prov" | "comments" | "source"
-        )) {
+        if o.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "self_ref"
+                    | "parent"
+                    | "children"
+                    | "content_layer"
+                    | "label"
+                    | "text"
+                    | "orig"
+                    | "formatting"
+                    | "hyperlink"
+                    | "level"
+                    | "enumerated"
+                    | "marker"
+                    | "prov"
+                    | "comments"
+                    | "source"
+            )
+        }) {
             return None;
         }
         let expected = format!("#/texts/{index}");
-        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(expected.as_str())) {
+        if item
+            .get("self_ref")
+            .is_some_and(|r| r.as_str() != Some(expected.as_str()))
+        {
             return None;
         }
         // Ill-typed present fields are not equivalent to absent fields: a
         // typed export must never erase authored link targets or run text.
         if ["orig", "hyperlink"].iter().any(|field| {
-            item.get(*field).is_some_and(|value| !value.is_null() && !value.is_string())
+            item.get(*field)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
         }) {
             return None;
         }
-        if item.get("comments").is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
-            || item.get("source").is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+        if item
+            .get("comments")
+            .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+            || item
+                .get("source")
+                .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
         {
             return None;
         }
         let label = item.get("label").and_then(Value::as_str).unwrap_or("text");
-        if !matches!(label, "text" | "paragraph" | "footnote" | "caption" |
-            "title" | "section_header" | "list_item" | "formula") {
+        if !matches!(
+            label,
+            "text"
+                | "paragraph"
+                | "footnote"
+                | "caption"
+                | "title"
+                | "section_header"
+                | "list_item"
+                | "formula"
+        ) {
             return None;
         }
         let text = item.get("text")?.as_str()?.to_owned();
         let formatting = match item.get("formatting").filter(|v| !v.is_null()) {
             Some(f) => {
                 let map = f.as_object()?;
-                if map.keys().any(|k| !matches!(
-                    k.as_str(), "bold" | "italic" | "underline" | "strikethrough" | "script"
-                )) {
+                if map.keys().any(|k| {
+                    !matches!(
+                        k.as_str(),
+                        "bold" | "italic" | "underline" | "strikethrough" | "script"
+                    )
+                }) {
                     return None;
                 }
                 let flag = |k: &str| -> Option<bool> {
@@ -223,8 +279,15 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         };
         let list = if label == "list_item" {
             Some(ListMeta {
-                enumerated: item.get("enumerated").and_then(Value::as_bool).unwrap_or(false),
-                marker: item.get("marker").and_then(Value::as_str).unwrap_or("").to_owned(),
+                enumerated: item
+                    .get("enumerated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                marker: item
+                    .get("marker")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
             })
         } else {
             None
@@ -234,15 +297,22 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         } else {
             None
         };
-        let id = tree.add(None, layer_of(item)?, TreeKind::Text {
-            label: label.to_owned(),
-            text,
-            orig: item.get("orig").and_then(Value::as_str).map(str::to_owned),
-            formatting,
-            hyperlink: item.get("hyperlink").and_then(Value::as_str).map(str::to_owned),
-            level,
-            list,
-        });
+        let id = tree.add(
+            None,
+            layer_of(item)?,
+            TreeKind::Text {
+                label: label.to_owned(),
+                text,
+                orig: item.get("orig").and_then(Value::as_str).map(str::to_owned),
+                formatting,
+                hyperlink: item
+                    .get("hyperlink")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                level,
+                list,
+            },
+        );
         if let Some(prov) = item.get("prov").filter(|v| !v.is_null()) {
             let entries = prov.as_array()?;
             if entries.len() > 1 {
@@ -277,27 +347,43 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
     }
     for (index, item) in groups.iter().enumerate() {
         let o = item.as_object()?;
-        if o.keys().any(|k| !matches!(
-            k.as_str(), "self_ref" | "parent" | "children" |
-            "content_layer" | "label" | "name"
-        )) {
+        if o.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "self_ref" | "parent" | "children" | "content_layer" | "label" | "name"
+            )
+        }) {
             return None;
         }
         let expected = format!("#/groups/{index}");
-        if item.get("self_ref").is_some_and(|r| r.as_str() != Some(expected.as_str())) {
+        if item
+            .get("self_ref")
+            .is_some_and(|r| r.as_str() != Some(expected.as_str()))
+        {
             return None;
         }
         if item.get("name").is_some_and(|v| !v.is_string()) {
             return None;
         }
         let label = item.get("label")?.as_str()?;
-        if !matches!(label, "inline" | "section" | "unspecified" | "list" | "ordered_list") {
+        if !matches!(
+            label,
+            "inline" | "section" | "unspecified" | "list" | "ordered_list"
+        ) {
             return None;
         }
-        tree.add(None, layer_of(item)?, TreeKind::Group {
-            label: label.to_owned(),
-            name: item.get("name").and_then(Value::as_str).unwrap_or("group").to_owned(),
-        });
+        tree.add(
+            None,
+            layer_of(item)?,
+            TreeKind::Group {
+                label: label.to_owned(),
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("group")
+                    .to_owned(),
+            },
+        );
     }
     let resolve_id = |r: &Value| -> Option<usize> {
         let s = r.get("$ref")?.as_str()?;
@@ -310,7 +396,11 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
     };
     for (id, raw) in texts.iter().chain(groups).enumerate() {
         tree.items[id].children = match raw.get("children") {
-            Some(v) => v.as_array()?.iter().map(&resolve_id).collect::<Option<Vec<_>>>()?,
+            Some(v) => v
+                .as_array()?
+                .iter()
+                .map(&resolve_id)
+                .collect::<Option<Vec<_>>>()?,
             None => Vec::new(),
         };
     }
@@ -326,18 +416,34 @@ fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
         }
         seen[id] = true;
         tree.items[id].parent = parent;
-        let raw = if id < texts.len() { &texts[id] } else { &groups[id - texts.len()] };
+        let raw = if id < texts.len() {
+            &texts[id]
+        } else {
+            &groups[id - texts.len()]
+        };
         if let Some(declared_parent) = raw.get("parent") {
             let declared = declared_parent.get("$ref")?.as_str()?;
-            let expected = parent.map_or_else(|| "#/body".to_owned(), |p| {
-                if p < texts.len() { format!("#/texts/{p}") }
-                else { format!("#/groups/{}", p - texts.len()) }
-            });
+            let expected = parent.map_or_else(
+                || "#/body".to_owned(),
+                |p| {
+                    if p < texts.len() {
+                        format!("#/texts/{p}")
+                    } else {
+                        format!("#/groups/{}", p - texts.len())
+                    }
+                },
+            );
             if declared != expected {
                 return None;
             }
         }
-        stack.extend(tree.items[id].children.iter().copied().map(|child| (child, Some(id), depth + 1)));
+        stack.extend(
+            tree.items[id]
+                .children
+                .iter()
+                .copied()
+                .map(|child| (child, Some(id), depth + 1)),
+        );
     }
     seen.iter().all(|&s| s).then_some(tree)
 }
@@ -1525,12 +1631,19 @@ mod tests {
         });
 
         let read = |v: &serde_json::Value| {
-            DoclingJsonBackend.convert(&SourceDocument::from_bytes(
-                "inline.json", InputFormat::JsonDocling, v.to_string().into_bytes(),
-            )).unwrap()
+            DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "inline.json",
+                    InputFormat::JsonDocling,
+                    v.to_string().into_bytes(),
+                ))
+                .unwrap()
         };
         let doc = read(&source);
-        assert!(doc.tree.is_some(), "a supported inline source needs a typed tree");
+        assert!(
+            doc.tree.is_some(),
+            "a supported inline source needs a typed tree"
+        );
         let before_markdown = doc.export_to_markdown();
         let first = doc.export_to_json_value();
 
@@ -1539,7 +1652,10 @@ mod tests {
         assert_eq!(first["texts"][1]["formatting"]["bold"], true);
         assert_eq!(first["texts"][1]["formatting"]["italic"], true);
         assert_eq!(first["texts"][2]["text"], "A_B & C");
-        assert_eq!(first["texts"][2]["hyperlink"], "https://example.org/r?x=1&y=a_b");
+        assert_eq!(
+            first["texts"][2]["hyperlink"],
+            "https://example.org/r?x=1&y=a_b"
+        );
         assert_eq!(first["texts"][2]["prov"][0]["page_no"], 1);
         assert_eq!(first["texts"][2]["prov"][0]["bbox"]["l"], 2.5);
         assert_eq!(first["texts"][3]["formatting"]["script"], "sub");
@@ -1570,25 +1686,39 @@ mod tests {
             "groups": [], "tables": [], "pictures": [], "pages": {}
         });
         let read = |v: &serde_json::Value| {
-            DoclingJsonBackend.convert(&SourceDocument::from_bytes(
-                "bad.json", InputFormat::JsonDocling, v.to_string().into_bytes(),
-            )).unwrap()
+            DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "bad.json",
+                    InputFormat::JsonDocling,
+                    v.to_string().into_bytes(),
+                ))
+                .unwrap()
         };
         assert!(read(&base).tree.is_some());
         let mut duplicated = base.clone();
-        duplicated["body"]["children"].as_array_mut().unwrap().push(
-            serde_json::json!({"$ref": "#/texts/0"}),
+        duplicated["body"]["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"$ref": "#/texts/0"}));
+        assert!(
+            read(&duplicated).tree.is_none(),
+            "duplicate refs are not a valid tree"
         );
-        assert!(read(&duplicated).tree.is_none(), "duplicate refs are not a valid tree");
         let mut unsupported = base.clone();
         unsupported["texts"][0]["unsupported_annotation"] = serde_json::json!("cannot preserve");
-        assert!(read(&unsupported).tree.is_none(), "unknown source semantics must not vanish");
+        assert!(
+            read(&unsupported).tree.is_none(),
+            "unknown source semantics must not vanish"
+        );
         let mut with_pages = base.clone();
         with_pages["pages"]["1"] = serde_json::json!({
             "page_no": 1, "size": {"width": 612.0, "height": 792.0}
         });
         let loaded = read(&with_pages);
-        assert!(loaded.tree.is_some(), "representable page sizes should be retained");
+        assert!(
+            loaded.tree.is_some(),
+            "representable page sizes should be retained"
+        );
         let round_trip = loaded.export_to_json_value();
         assert_eq!(round_trip["pages"]["1"]["page_no"], 1);
         assert_eq!(round_trip["pages"]["1"]["size"]["width"], 612.0);
@@ -1597,7 +1727,10 @@ mod tests {
         unsafe_page["pages"]["1"]["image"] = serde_json::json!({
             "uri": "data:image/png;base64,AAAA"
         });
-        assert!(read(&unsafe_page).tree.is_none(), "page image evidence must not be dropped");
+        assert!(
+            read(&unsafe_page).tree.is_none(),
+            "page image evidence must not be dropped"
+        );
     }
 
     /// Existing DOCX reference fixtures were admitted against upstream docling
@@ -1636,7 +1769,10 @@ mod tests {
             );
 
             let reread = read(&first);
-            assert!(reread.tree.is_some(), "{name}: second import lost typed structure");
+            assert!(
+                reread.tree.is_some(),
+                "{name}: second import lost typed structure"
+            );
             let second = reread.export_to_json_value();
             for key in ["texts", "groups", "body"] {
                 assert_eq!(second[key], first[key], "{name}: {key} drifted on reimport");
@@ -1727,7 +1863,10 @@ mod tests {
             "pictures": []
         });
         for (field, invalid) in [
-            ("hyperlink", serde_json::json!({"uri": "https://example.com"})),
+            (
+                "hyperlink",
+                serde_json::json!({"uri": "https://example.com"}),
+            ),
             ("orig", serde_json::json!(12)),
             ("formatting", serde_json::json!({"bold": "true"})),
             ("formatting", serde_json::json!({"script": 12})),
@@ -1741,9 +1880,10 @@ mod tests {
                     source.to_string().into_bytes(),
                 ))
                 .unwrap();
-            assert!(document.tree.is_none(), "{field}: invalid semantics were dropped");
+            assert!(
+                document.tree.is_none(),
+                "{field}: invalid semantics were dropped"
+            );
             source["texts"][0].as_object_mut().unwrap().remove(field);
         }
-    }
-
-}
+    }}
