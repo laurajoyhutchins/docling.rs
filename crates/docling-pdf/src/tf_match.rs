@@ -856,6 +856,32 @@ mod tests {
     }
 
     #[test]
+    fn source_word_with_equal_cell_evidence_survives_as_unplaced() {
+        // Both grid columns have independent source words, so column
+        // deduplication cannot erase the competing assignments. The long
+        // third word overlaps both columns by the same positive area.
+        let cells = vec![cell(0, 0, 10.0), cell(1, 1, 110.0)];
+        let leader = PdfWord {
+            id: 7,
+            bbox: [65.0, 15.0, 115.0, 23.0],
+            text: ". . . . .".into(),
+        };
+        let words = [
+            word(1, "Notices", 20.0, 15.0),
+            word(2, "vii", 130.0, 15.0),
+            leader.clone(),
+        ];
+        let (_, matches, unplaced) = match_and_post_process_with_unplaced(cells, &words);
+        assert!(matches.contains_key(&1), "left column remains readable");
+        assert!(matches.contains_key(&2), "right column remains readable");
+        assert!(!matches.contains_key(&7), "leader has no defensible owner");
+        assert_eq!(unplaced.len(), 1);
+        assert_eq!(unplaced[0].id, leader.id);
+        assert_eq!(unplaced[0].text, leader.text);
+        assert_eq!(unplaced[0].bbox, leader.bbox);
+    }
+
+    #[test]
     fn unmatched_words_retain_source_identity_and_geometry() {
         let cells = vec![cell(0, 0, 10.0)];
         let words = [
