@@ -239,7 +239,7 @@ class SemanticTableTests(unittest.TestCase):
             self.assertEqual(result, 1)
             rows = json.loads(report.read_text(encoding="utf-8"))["results"]
             self.assertEqual(rows[0]["passed"], False)
-            self.assertEqual(rows[0]["error_class"], "conversion_or_input_error")
+            self.assertEqual(rows[0]["error_class"], "input_or_reference_integrity")
 
     def test_failed_binding_includes_bounded_minimal_repro(self):
         import semantic_dimensions as dims
