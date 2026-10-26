@@ -137,5 +137,60 @@ class SemanticTableTests(unittest.TestCase):
         ]))
 
 
+    def test_dimensions_separate_wrong_number_from_wrong_row(self):
+        import semantic_dimensions as dims
+        case = {"bindings": [{"name": "rating", "cells": [
+            {"equals": "10 HP"}, {"equals": "14 A"}]}],
+            "text_anchors": ["10 HP"]}
+        doc = {"tables": [table(cell("10 HP", 0, 0),
+                                 cell("14 A", 1, 1), rows=2, cols=2)]}
+        scores = dims.score_dimensions(doc, case, audit.score_document(doc, case))
+        self.assertEqual(scores["numbers_units"]["status"], "passed")
+        self.assertEqual(scores["numbers_units"]["unit_status"], "measured")
+        self.assertEqual(scores["table_bindings"]["status"], "failed")
+        self.assertIn("table_row_column_binding_missing",
+                      [f["class"] for f in dims.failures(scores)])
+        doc["tables"][0]["data"]["table_cells"][1]["text"] = "15 A"
+        scores = dims.score_dimensions(doc, case, audit.score_document(doc, case))
+        self.assertEqual(scores["numbers_units"]["status"], "failed")
+        self.assertIn("numeric_cell_missing", [f["class"] for f in dims.failures(scores)])
+        for name in ("reading_order", "cross_references", "bounding_boxes"):
+            self.assertEqual(scores[name]["status"], "unsupported")
+            self.assertEqual(scores[name]["total"], 0)
+
+    def test_reading_order_rejects_inversion_and_duplicate_rows(self):
+        import semantic_dimensions as dims
+        first = {"name": "first", "cells": [{"equals": "A"}, {"equals": "1"}]}
+        second = {"name": "second", "cells": [{"equals": "B"}, {"equals": "2"}]}
+        case = {"bindings": [first, second], "reading_order": ["first", "second"]}
+        cells = [cell("A", 0, 0), cell("1", 0, 1),
+                 cell("B", 1, 0), cell("2", 1, 1)]
+        doc = {"tables": [table(*cells, rows=3, cols=2)]}
+        self.assertEqual(dims.score_dimensions(
+            doc, case, audit.score_document(doc, case))["reading_order"]["status"], "passed")
+        for item in cells:
+            item["start_row_offset_idx"] = 1 - item["start_row_offset_idx"]
+            item["end_row_offset_idx"] = item["start_row_offset_idx"] + 1
+        self.assertEqual(dims.score_dimensions(
+            doc, case, audit.score_document(doc, case))["reading_order"]["status"], "failed")
+        for item in cells:
+            item["start_row_offset_idx"] = 1 - item["start_row_offset_idx"]
+            item["end_row_offset_idx"] = item["start_row_offset_idx"] + 1
+        doc["tables"][0]["data"]["table_cells"].extend([cell("A", 2, 0), cell("1", 2, 1)])
+        self.assertEqual(dims.score_dimensions(
+            doc, case, audit.score_document(doc, case))["reading_order"]["status"], "failed")
+
+    def test_review_exposes_unsupported_dimensions(self):
+        import semantic_dimensions as dims
+        scores = dims.score_dimensions({"tables": []},
+            {"bindings": [], "text_anchors": []}, [])
+        report = {"results": [{"id": "small", "source": "fixture.pdf",
+                               "passed": False, "dimensions": scores,
+                               "failures": dims.failures(scores)}]}
+        text = dims.review_markdown(report)
+        self.assertIn("| bounding_boxes | unsupported | 0/0 |", text)
+        self.assertIn("| cross_references | unsupported | 0/0 |", text)
+
+
 if __name__ == "__main__":
     unittest.main()

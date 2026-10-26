@@ -57,7 +57,14 @@
         }
       ],
       "reference_json": "tests/data/pdf/groundtruth/redp5110_sampled.json",
-      "reference_git_blob": "f8248a8efd4aa07206630473124e17f52b52d2dc"
+      "reference_git_blob": "f8248a8efd4aa07206630473124e17f52b52d2dc",
+      "text_anchors": [
+        "Notices",
+        "Chapter 1. Securing and protecting IBM DB2 data",
+        "Chapter 2. Roles and separation of duties"
+      ],
+      "rights_status": "Existing committed sample of publicly accessible source; redistribution permission not independently verified",
+      "review_scope": "Reviewed table facts only; full source PDF digest, source-coordinate and regulatory target oracles absent"
     },
     {
       "id": "otsl-paper-hpo-table",
@@ -186,7 +193,18 @@
         }
       ],
       "reference_json": "tests/data/pdf/groundtruth/2305.03393v1-pg9.json",
-      "reference_git_blob": "a0f7a074350f69d7618b74464af8734c0cc0fc35"
+      "reference_git_blob": "a0f7a074350f69d7618b74464af8734c0cc0fc35",
+      "text_anchors": [
+        "OTSL HTML"
+      ],
+      "reading_order": [
+        "6×6 OTSL/HTML paired metrics stay in their printed row",
+        "4×4 OTSL/HTML paired metrics stay in their printed row",
+        "2×4 OTSL/HTML paired metrics stay in their printed row",
+        "4×2 OTSL/HTML paired metrics stay in their printed row"
+      ],
+      "rights_status": "Existing committed sample of publicly accessible source; redistribution permission not independently verified",
+      "review_scope": "Reviewed table facts only; full source PDF digest, source-coordinate and regulatory target oracles absent"
     }
   ]
 }

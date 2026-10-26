@@ -167,7 +167,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: semantic-tables-${{ github.sha }}
-          path: target/semantic_tables.json
+          path: |
+            target/semantic_tables.json
+            target/semantic_review.md
           retention-days: 14
           if-no-files-found: warn
 

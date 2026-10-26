@@ -94,3 +94,24 @@ coordinate accuracy, regulatory cross-reference testing, or a large statistical
 accuracy claim. Those are additional #11 acceptance criteria, and the new
 machine-readable report provides a place to expand the evidence without
 regenerating Markdown snapshots to mask errors.
+
+## Source-grounded semantic scorecard
+
+The report now separates six dimensions. Text recall means only the reviewed anchor phrases,
+not the entire PDF. Numbers/units checks numeric text in distinct table cells without claiming
+correct column association; table bindings score row and column ownership separately.
+Engineering units are explicitly unsupported when no reviewed unit facts exist. Reading
+order is checked for the reviewed OTSL row sequence; the IBM sample has no such oracle.
+Cross-reference targets and physical bounding boxes are unsupported, not counted as passes.
+
+The runner emits target/semantic_tables.json (schema version 2, classified failures) and
+target/semantic_review.md (human review). Use --reference-only to audit the pinned Python
+reference without a Rust binary; that is NOT Rust model-backed evidence.
+Use --report-only for diagnostic semantic scoring, never to mask failed source/reference
+integrity or failed conversions.
+
+Source SHA-256 in the report refers to the committed sample, not the original whole PDF.
+Source rights status is explicitly unverified for redistribution. CLI args and any
+explicit model configuration are captured, but model asset digests and full-source
+SHA-256s are not pinned here. Do not claim extractor accuracy or legal rights from
+public accessibility or Python parity.

@@ -151,13 +151,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bin", type=Path, default=ROOT / "target/release/docling-rs")
     parser.add_argument("--json-dir", type=Path, help="Read CASE_ID.json instead of running Rust")
     parser.add_argument("--report", type=Path, default=ROOT / "target/semantic_tables.json")
+    parser.add_argument("--review", type=Path, default=ROOT / "target/semantic_review.md")
+    parser.add_argument("--reference-only", action="store_true",
+                        help="Validate and score pinned upstream JSON, no Rust binary or models")
     parser.add_argument("--report-only", action="store_true",
                         help="Report failures without returning a failing exit code")
     args = parser.parse_args(argv)
     manifest = json.loads(args.cases.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1 or not isinstance(manifest.get("cases"), list):
         parser.error("unsupported semantic-table fixture schema")
+    from semantic_dimensions import score_dimensions, failures, review_markdown
+
     results = []
+    integrity_failed = False
     for case in manifest["cases"]:
         name = case["id"]
         entry: dict[str, Any] = {"id": name, "source": case["source"]}
@@ -169,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
             entry["source_sha256"] = sha256
             entry["source_git_blob"] = git_blob
             entry["source_url"] = case["source_url"]
+            entry["source_rights_status"] = case.get("rights_status", "not independently verified")
+            entry["review_scope"] = case.get("review_scope", "not recorded")
+            entry["original_pdf_sha256"] = None  # sampled source digest != full linked source digest
             entry["original_pdf_pages"] = case["original_pdf_pages"]
             if git_blob != case["source_git_blob"]:
                 raise ValueError(
@@ -203,17 +212,29 @@ def main(argv: list[str] | None = None) -> int:
                     + ", ".join(invalid_reference_checks)
                 )
             entry["reference_compatible"] = True
-            if args.json_dir is None:
+            if args.reference_only:
+                doc = reference_doc
+            elif args.json_dir is None:
                 doc = convert(source, args.bin.resolve())
             else:
                 doc = json.loads((args.json_dir / f"{name}.json").read_text(encoding="utf-8"))
             if not isinstance(doc, dict):
                 raise ValueError("Docling JSON root must be an object")
             entry["checks"] = score_document(doc, case)
-            entry["passed"] = all(c["passed"] for c in entry["checks"])
+            entry["dimensions"] = score_dimensions(doc, case, entry["checks"])
+            entry["failures"] = failures(entry["dimensions"])
+            entry["passed"] = all(v["status"] != "failed" for v in entry["dimensions"].values())
         except (OSError, ValueError, KeyError, RuntimeError) as error:
+            integrity_failed = True
             entry["passed"] = False
             entry["error"] = str(error)
+            entry["error_class"] = (
+                "input_or_reference_integrity"
+                if "source" in str(error).lower() or "reference" in str(error).lower()
+                else "conversion_or_input_error"
+            )
+            entry["failures"] = [{"dimension": "runner", "name": name,
+                                   "class": entry["error_class"]}]
         results.append(entry)
         ok = sum(c["passed"] for c in entry.get("checks", []))
         total = len(entry.get("checks", []))
@@ -231,13 +252,35 @@ def main(argv: list[str] | None = None) -> int:
                                for r in results),
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(
-        json.dumps({"schema_version": 1, "summary": summary, "results": results},
-                   indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    print(f"Evidence: {args.report}")
-    return 0 if args.report_only or summary["passed_cases"] == summary["cases"] else 1
+    extraction = {
+        "engine": "pinned_python_reference" if args.reference_only else
+                  ("precomputed_json" if args.json_dir is not None else "rust"),
+        "cli_args": ["--skip-ocr", "--compact-tables", "--to", "json"],
+        "input_json_dir": str(args.json_dir) if args.json_dir else None,
+    }
+    if args.json_dir is None and not args.reference_only:
+        extraction["binary_path"] = str(args.bin)
+        if args.bin.is_file():
+            extraction["binary_sha256"] = hashlib.sha256(args.bin.read_bytes()).hexdigest()
+        # These record observable configuration, not evidence a model was loaded.
+        import os
+        extraction["model_configuration"] = {
+            key: os.environ.get(key, "not explicitly pinned")
+            for key in ("DOCLING_LAYOUT_ONNX", "DOCLING_TABLEFORMER_ENCODER",
+                        "DOCLING_TABLEFORMER_DECODER", "DOCLING_TABLEFORMER_BBOX",
+                        "DOCLING_RS_RENDERER", "DOCLING_RS_FP32", "DOCLING_RS_PDF_THREADS")
+        }
+    report = {"schema_version": 2, "summary": summary, "results": results,
+              "extraction": extraction,
+              "scope": "sampled original-PDF facts, not whole-document or engineering-rule correctness"}
+    args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+    args.review.parent.mkdir(parents=True, exist_ok=True)
+    args.review.write_text(review_markdown(report), encoding="utf-8")
+    print(f"Evidence: {args.report}; review: {args.review}")
+    # --report-only may mask observed semantic disagreement but never broken inputs.
+    return 1 if integrity_failed else (
+        0 if args.report_only or summary["passed_cases"] == summary["cases"] else 1)
 
 
 if __name__ == "__main__":
