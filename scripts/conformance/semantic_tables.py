@@ -160,7 +160,9 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(args.cases.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1 or not isinstance(manifest.get("cases"), list):
         parser.error("unsupported semantic-table fixture schema")
-    from semantic_dimensions import score_dimensions, failures, review_markdown
+    from semantic_dimensions import (
+        score_dimensions, failures, review_markdown, minimal_repros
+    )
 
     results = []
     integrity_failed = False
@@ -223,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
             entry["checks"] = score_document(doc, case)
             entry["dimensions"] = score_dimensions(doc, case, entry["checks"])
             entry["failures"] = failures(entry["dimensions"])
+            entry["minimal_repros"] = minimal_repros(doc, case, entry["checks"])
+            entry["unassigned_words"] = {
+                "status": "unsupported",
+                "reason": "No audited unassigned-source-word contract for this JSON extraction path",
+            }
             entry["passed"] = all(v["status"] != "failed" for v in entry["dimensions"].values())
         except (OSError, ValueError, KeyError, RuntimeError) as error:
             integrity_failed = True
@@ -264,12 +271,36 @@ def main(argv: list[str] | None = None) -> int:
             extraction["binary_sha256"] = hashlib.sha256(args.bin.read_bytes()).hexdigest()
         # These record observable configuration, not evidence a model was loaded.
         import os
-        extraction["model_configuration"] = {
+        extraction["settings"] = {
             key: os.environ.get(key, "not explicitly pinned")
-            for key in ("DOCLING_LAYOUT_ONNX", "DOCLING_TABLEFORMER_ENCODER",
-                        "DOCLING_TABLEFORMER_DECODER", "DOCLING_TABLEFORMER_BBOX",
-                        "DOCLING_RS_RENDERER", "DOCLING_RS_FP32", "DOCLING_RS_PDF_THREADS")
+            for key in ("DOCLING_RS_RENDERER", "DOCLING_RS_FP32",
+                        "DOCLING_RS_PDF_THREADS", "DOCLING_RS_SLOW_RESIZE")
         }
+        defaults = {
+            "DOCLING_LAYOUT_ONNX": ".models/layout_heron.onnx",
+            "DOCLING_TABLEFORMER_ENCODER": ".models/tableformer/encoder.onnx",
+            "DOCLING_TABLEFORMER_DECODER": ".models/tableformer/decoder.onnx",
+            "DOCLING_TABLEFORMER_BBOX": ".models/tableformer/bbox.onnx",
+        }
+        extraction["model_asset_candidates"] = {}
+        for key, default in defaults.items():
+            path = Path(os.environ.get(key, str(ROOT / default)))
+            value = {"path": str(path), "explicit_override": key in os.environ}
+            if path.is_file():
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
+                value["sha256"] = digest.hexdigest()
+            else:
+                value["status"] = "absent_or_unavailable"
+            extraction["model_asset_candidates"][key] = value
+        # Fingerprinted candidates may not be the models actually selected by
+        # the runtime; the PDF model loader must be audited independently.
+        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                  text=True, capture_output=True, check=False)
+        extraction["checkout_revision"] = (
+            revision.stdout.strip() if revision.returncode == 0 else None)
     report = {"schema_version": 2, "summary": summary, "results": results,
               "extraction": extraction,
               "scope": "sampled original-PDF facts, not whole-document or engineering-rule correctness"}

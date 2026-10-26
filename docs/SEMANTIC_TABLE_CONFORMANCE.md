@@ -115,3 +115,5 @@ Source rights status is explicitly unverified for redistribution. CLI args and a
 explicit model configuration are captured, but model asset digests and full-source
 SHA-256s are not pinned here. Do not claim extractor accuracy or legal rights from
 public accessibility or Python parity.
+
+Failed table associations now include a bounded expected-versus-observed logical-cell reproduction, and unassigned-source-word coverage is explicitly unsupported. The runner records SHA-256 fingerprints for candidate ONNX model files when present, along with explicit overrides, extraction settings, Rust binary digest, and checkout revision. Candidate model presence is NOT proof of which weights the runtime actually loaded.

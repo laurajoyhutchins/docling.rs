@@ -119,6 +119,43 @@ def failures(dimensions: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
             for c in score["checks"] if not c["passed"]]
 
 
+def minimal_repros(document: dict[str, Any], case: dict[str, Any],
+                   failed_bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bounded cell-level reproduction for a failed source row/column assertion.
+
+    These are observed cells, not source-verified rectangles. A failed assertion
+    that has no candidate text still emits its expected values.
+    """
+    tables = document.get("tables", [])
+    if not isinstance(tables, list):
+        tables = []
+    by_name = {b["name"]: b for b in case["bindings"]}
+    reproductions = []
+    for check in failed_bindings:
+        if check["passed"]:
+            continue
+        assertion = by_name[check["name"]]
+        candidates = []
+        for ti, table in enumerate(tables):
+            if not isinstance(table, dict):
+                continue
+            for cell in eligible_cells(table):
+                if any(matches(cell["text"], f) for f in assertion["cells"]):
+                    candidates.append({
+                        "table": ti, "text": cell["text"],
+                        "row": [cell["start_row_offset_idx"], cell["end_row_offset_idx"]],
+                        "column": [cell["start_col_offset_idx"], cell["end_col_offset_idx"]],
+                    })
+        reproductions.append({
+            "name": check["name"], "failure_class": "table_row_column_binding_missing",
+            "expected_source_cells": assertion["cells"],
+            "observed_matching_cells": candidates[:16],
+            "observed_candidate_count": len(candidates),
+            "truncated": len(candidates) > 16,
+        })
+    return reproductions
+
+
 def review_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Source-grounded PDF semantic review", "",
@@ -143,6 +180,10 @@ def review_markdown(report: dict[str, Any]) -> str:
         lines.extend(["", "### Failures and unsupported checks", ""])
         for f in case.get("failures", []):
             lines.append("- {}: {} [{}]".format(f["dimension"], f["name"], f["class"]))
+        for repro in case.get("minimal_repros", []):
+            lines.append("- Repro {}: expected {}; observed cells {}".format(
+                repro["name"], repro["expected_source_cells"],
+                repro["observed_matching_cells"]))
         for name, value in case.get("dimensions", {}).items():
             if value["status"] == "unsupported":
                 lines.append("- {}: unsupported ({})".format(name, value["reason"]))
