@@ -78,6 +78,7 @@ class RustCliTest(unittest.TestCase):
                 self.assertEqual(exit_context.exception.code, 1)
                 report = json.loads((runner.ROOT / "target/full_conformance.json").read_text())
                 self.assertEqual(report["summary"][0][-1], 1)
+                self.assertEqual(report["summary"][0][2:5], [0, 0, 0])
                 self.assertEqual(report["rows"][0][2], "RUST-ERR")
 
     def test_difference_is_report_only_not_process_failure(self):
