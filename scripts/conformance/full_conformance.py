@@ -21,7 +21,9 @@ format-xml-jats,format-xml-uspto,format-xml-xbrl]" pypdfium2 pylatexenc
 Prints a per-format summary (files upstream converts, Markdown exact,
 Markdown exact after whitespace normalization, JSON identical, upstream
 errors) and every file that is not exact on both, then writes the raw rows to
-`target/full_conformance.json`. Formats upstream cannot convert without the ML
+`target/full_conformance.json`. A failed Rust CLI execution (or malformed Rust JSON)
+is reported as `RUST-ERR` and exits nonzero after writing the report;
+ordinary output differences remain informational. Formats upstream cannot convert without the ML
 pipeline (PDF, images, audio) or that are docling.rs extensions (`.numbers`,
 `.key`, `.msg`, RTF, …) are skipped; a file upstream itself fails on counts as
 an error, not a miss.
@@ -154,12 +156,23 @@ def diff_lines(a: str, b: str) -> int:
 
 
 def run_cli(*args: str) -> str:
-    return subprocess.run([CLI, *args], capture_output=True, text=True).stdout
+    try:
+        result = subprocess.run([CLI, *args], capture_output=True, text=True)
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Rust CLI could not execute: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip()[:200]
+        raise RuntimeError(
+            f"Rust CLI failed (exit {result.returncode})"
+            + (f": {detail}" if detail else "")
+        )
+    return result.stdout
 
 
 def main() -> None:
     formats = sys.argv[1:] or DEFAULT_FORMATS
     summary, rows = [], []
+    rust_failures = 0
     for fmt in formats:
         n = md_exact = md_norm = json_ok = errors = 0
         for src in sorted(glob.glob(str(ROOT / "tests/data" / fmt / "sources" / "*"))):
@@ -176,19 +189,27 @@ def main() -> None:
                 continue
             ref_md, ref_json = ref
             n += 1
-            ours_md = run_cli(src)
-            strict = diff_lines(ours_md.rstrip("\n"), ref_md.rstrip("\n"))
-            loose = diff_lines(norm(ours_md), norm(ref_md))
+            try:
+                ours_md = run_cli(src)
+                strict = diff_lines(ours_md.rstrip("\n"), ref_md.rstrip("\n"))
+                loose = diff_lines(norm(ours_md), norm(ref_md))
+                json_state = "n/a"
+                if ref_json is not None:
+                    ours = strip(json.loads(run_cli("--to", "json", src)))
+                    if not isinstance(ours, dict):
+                        raise RuntimeError("Rust CLI returned a non-object JSON document")
+                    want = strip(ref_json)
+                    ours.pop("name", None)
+                    want.pop("name", None)
+                    json_state = "ok" if ours == want else "DIFF"
+                    json_ok += json_state == "ok"
+            except (RuntimeError, json.JSONDecodeError) as exc:
+                rows.append((fmt, path.name, "RUST-ERR", str(exc)[:90]))
+                errors += 1
+                rust_failures += 1
+                continue
             md_exact += strict == 0
             md_norm += loose == 0
-            json_state = "n/a"
-            if ref_json is not None:
-                ours = strip(json.loads(run_cli("--to", "json", src) or "{}"))
-                want = strip(ref_json)
-                ours.pop("name", None)
-                want.pop("name", None)
-                json_state = "ok" if ours == want else "DIFF"
-                json_ok += json_state == "ok"
             rows.append((fmt, path.name, f"md={strict}/{loose}", f"json={json_state}"))
         summary.append((fmt, n, md_exact, md_norm, json_ok, errors))
 
@@ -202,7 +223,10 @@ def main() -> None:
         print(f"{fmt:12s} {name:50s} {md:14s} {js}")
     out = ROOT / "target" / "full_conformance.json"
     out.parent.mkdir(exist_ok=True)
-    json.dump({"summary": summary, "rows": rows}, out.open("w"), indent=1)
+    with out.open("w") as report:
+        json.dump({"summary": summary, "rows": rows}, report, indent=1)
+    if rust_failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
