@@ -75,6 +75,8 @@ class RustCliTest(unittest.TestCase):
             [RuntimeError("Rust CLI could not execute: missing binary")],
             ["valid Markdown", RuntimeError("Rust CLI failed (exit 8)")],
             ["valid Markdown", "{malformed json"],
+            ["valid Markdown", "[]"],
+            ["valid Markdown", "null"],
         ]:
             with self.subTest(responses=responses), tempfile.TemporaryDirectory() as tmp:
                 runner = load_runner()
