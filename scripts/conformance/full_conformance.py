@@ -156,7 +156,10 @@ def diff_lines(a: str, b: str) -> int:
 
 
 def run_cli(*args: str) -> str:
-    result = subprocess.run([CLI, *args], capture_output=True, text=True)
+    try:
+        result = subprocess.run([CLI, *args], capture_output=True, text=True)
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Rust CLI could not execute: {exc}") from exc
     if result.returncode != 0:
         detail = result.stderr.strip()[:200]
         raise RuntimeError(
