@@ -56,9 +56,23 @@ class RustCliTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "exit 23.*bad model"):
                 self.runner.run_cli("-c", command)
 
+    def test_missing_cli_does_not_look_like_empty_markdown(self):
+        with mock.patch.object(self.runner, "CLI", "/nonexistent/docling-rs"):
+            with self.assertRaisesRegex(RuntimeError, "could not execute"):
+                self.runner.run_cli("--to", "json", "input.pdf")
+
+    def test_undecodable_cli_output_is_execution_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "write_non_utf8.py"
+            binary.write_text("import sys; sys.stdout.buffer.write(b'\\xff')")
+            with mock.patch.object(self.runner, "CLI", sys.executable):
+                with self.assertRaisesRegex(RuntimeError, "could not execute"):
+                    self.runner.run_cli(str(binary))
+
     def test_rust_failure_recorded_and_report_exit_nonzero(self):
         for responses in [
             [RuntimeError("Rust CLI failed (exit 7)")],
+            [RuntimeError("Rust CLI could not execute: missing binary")],
             ["valid Markdown", RuntimeError("Rust CLI failed (exit 8)")],
             ["valid Markdown", "{malformed json"],
         ]:
