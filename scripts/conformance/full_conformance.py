@@ -190,8 +190,6 @@ def main() -> None:
                 ours_md = run_cli(src)
                 strict = diff_lines(ours_md.rstrip("\n"), ref_md.rstrip("\n"))
                 loose = diff_lines(norm(ours_md), norm(ref_md))
-                md_exact += strict == 0
-                md_norm += loose == 0
                 json_state = "n/a"
                 if ref_json is not None:
                     ours = strip(json.loads(run_cli("--to", "json", src)))
@@ -205,6 +203,8 @@ def main() -> None:
                 errors += 1
                 rust_failures += 1
                 continue
+            md_exact += strict == 0
+            md_norm += loose == 0
             rows.append((fmt, path.name, f"md={strict}/{loose}", f"json={json_state}"))
         summary.append((fmt, n, md_exact, md_norm, json_ok, errors))
 
