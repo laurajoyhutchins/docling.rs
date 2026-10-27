@@ -196,6 +196,8 @@ def main() -> None:
                 json_state = "n/a"
                 if ref_json is not None:
                     ours = strip(json.loads(run_cli("--to", "json", src)))
+                    if not isinstance(ours, dict):
+                        raise RuntimeError("Rust CLI returned a non-object JSON document")
                     want = strip(ref_json)
                     ours.pop("name", None)
                     want.pop("name", None)
