@@ -368,7 +368,7 @@ fn validate_word_partition(
             if !accounted.insert(*id) {
                 return Err(format!("duplicate assigned source word id {id}"));
             }
-            source_text.push(word.text.as_str());
+            source_text.push(word.text.trim());
         }
         if normalize_cell_text(source_text.join(" ")) != cell.text {
             return Err(format!(
@@ -432,7 +432,9 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
                 Some(PdfWord {
                     id: wi,
                     bbox: [l, t, r, b],
-                    text: w.text.trim().to_string(),
+                    // Preserve the source parser's raw bytes in evidence. Matcher
+                    // and accepted-cell text are separately normalized below.
+                    text: w.text.clone(),
                 })
             } else {
                 None
@@ -517,7 +519,7 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         cell_assignments.push(wis.iter().map(|&i| table_words[i].id).collect());
         let text = wis
             .iter()
-            .map(|&i| table_words[i].text.as_str())
+            .map(|&i| table_words[i].text.trim())
             .collect::<Vec<_>>()
             .join(" ");
         let text = normalize_cell_text(text);
@@ -638,7 +640,9 @@ fn docling_match_rows(
                 w.bbox[2] * SCALE,
                 w.bbox[3] * SCALE,
             ],
-            text: w.text.clone(),
+            // Keep the pre-existing, trimmed matcher input stable. Only the
+            // source evidence retains raw whitespace from TextCell.
+            text: w.text.trim().to_string(),
         })
         .collect();
 
@@ -917,6 +921,61 @@ mod tests {
         changed[0].text = "14 A".into();
         changed[0].bbox[2] = 20.0;
         assert!(validate_word_partition(&source, &assignments, &[cell], &changed).is_err());
+    }
+
+    #[test]
+    fn rejected_prediction_preserves_raw_pdf_word_text() {
+        // The interpretation path trims for matching, but source evidence
+        // must retain the exact parser string, including outer whitespace.
+        let original = "  480 V & <phase>_  ";
+        let word = TextCell {
+            text: original.into(),
+            l: 5.0,
+            t: 5.0,
+            r: 70.0,
+            b: 15.0,
+        };
+        let unsupported = TableCell {
+            row: 0,
+            col: 0,
+            colspan: 0,
+            rowspan: 1,
+            tag: FCEL,
+            class: 2,
+            cx: 0.5,
+            cy: 0.5,
+            w: 1.0,
+            h: 1.0,
+        };
+        let grid = table_rows(&[unsupported], [0.0, 0.0, 100.0, 100.0], &[word])
+            .expect("unsupported TableFormer must preserve source evidence");
+        assert!(grid.cells.is_empty());
+        assert!(grid.rows.is_empty());
+        assert_eq!(grid.unplaced.len(), 1);
+        assert_eq!(grid.unplaced[0].source_cell_id, 0);
+        assert_eq!(grid.unplaced[0].text, original);
+        assert_eq!(grid.unplaced[0].bbox, [5.0, 5.0, 70.0, 15.0]);
+    }
+
+    #[test]
+    fn admitted_cell_normalizes_raw_word_without_dropping_source_identity() {
+        let source = [PdfWord {
+            id: 7,
+            text: "  480 V  ".into(),
+            bbox: [0.0, 0.0, 10.0, 10.0],
+        }];
+        let cell = docling_core::TableCell {
+            text: "480 V".into(),
+            bbox: Some([0.0, 0.0, 10.0, 10.0]),
+            start_row: 0,
+            start_col: 0,
+            row_span: 1,
+            col_span: 1,
+            column_header: false,
+            row_header: false,
+            row_section: false,
+        };
+        assert!(validate_word_partition(&source, &[vec![7]], &[cell], &[]).is_ok());
     }
 
     #[test]
