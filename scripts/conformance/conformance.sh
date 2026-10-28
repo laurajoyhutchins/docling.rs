@@ -70,7 +70,13 @@ for src in "$SRC_DIR"/*; do
   reference_into "$src" "$ref" || continue
   total=$((total + 1))
 
-  out="$(cargo run --quiet --manifest-path "$MANIFEST" -p docling-cli -- "$src" 2>/dev/null || echo '<ERROR>')"
+  # A failed converter is an execution error, not a valid output to score.
+  # In particular, partial stdout must never pass as a plausible extraction.
+  out="$(cargo run --quiet --manifest-path "$MANIFEST" -p docling-cli -- "$src")" || {
+    status=$?
+    printf 'error: Rust conversion failed for %s (exit %d)\n' "$src" "$status" >&2
+    exit "$status"
+  }
   # Strict, trailing-newline-insensitive byte comparison.
   d="$(diff <(printf '%s' "$out") <(printf '%s' "$(cat "$ref")") | grep -cE '^[<>]' || true)"
   # Whitespace-normalized comparison (spacing-only diffs ignored).
