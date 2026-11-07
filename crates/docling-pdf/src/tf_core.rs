@@ -325,6 +325,7 @@ fn rejected_table_grid(source_words: &[PdfWord], reason: &str) -> TableGrid {
                 bbox: word.bbox.map(|value| value as f32),
             })
             .collect(),
+        ambiguous: Vec::new(),
     }
 }
 
@@ -569,6 +570,7 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
             rows: grid,
             cells: out_cells,
             unplaced,
+            ambiguous: Vec::new(),
         },
         &table_words,
         &cell_assignments,
@@ -676,8 +678,8 @@ fn docling_match_rows(
         dump_match_inputs(&dir, &tf_cells, &scaled_words);
     }
 
-    let (cells_wo, final_matches, _matcher_unplaced) =
-        crate::tf_match::match_and_post_process_with_unplaced(tf_cells, &scaled_words);
+    let (cells_wo, final_matches, _matcher_unplaced, ties) =
+        crate::tf_match::match_and_post_process_with_evidence(tf_cells, &scaled_words);
 
     // `_merge_tf_output`: group per (column, row) in ascending-pdf-id order; the
     // first word's table cell fixes the group's offsets and spans.
@@ -782,6 +784,34 @@ fn docling_match_rows(
         })
         .collect();
 
+    // Evidence of equally scored predictions must survive *beside* the
+    // selected visible cell. It is not permission to guess a new owner or
+    // discard a source word. Validate the tie IDs against the surviving
+    // assigned partition before exposing them.
+    let mut ambiguous = Vec::with_capacity(ties.len());
+    for tie in ties {
+        if !assigned_set.contains(&tie.pdf_id) || !tie.score.is_finite() {
+            return Some(rejected_table_grid(
+                table_words,
+                "ambiguous match inconsistent with assigned PDF source word",
+            ));
+        }
+        let Some(word) = table_words.iter().find(|word| word.id == tie.pdf_id) else {
+            return Some(rejected_table_grid(
+                table_words,
+                "ambiguous match refers to unknown PDF source word",
+            ));
+        };
+        ambiguous.push(crate::assemble::AmbiguousTableWord {
+            source_cell_id: word.id,
+            text: word.text.clone(),
+            bbox: word.bbox.map(|value| value as f32),
+            selected_cell_id: tie.chosen_cell_id,
+            competing_cell_ids: tie.competing_cell_ids,
+            overlap_score: tie.score,
+        });
+    }
+
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
     let mut out_cells = Vec::with_capacity(merged.len());
     for m in &merged {
@@ -814,6 +844,7 @@ fn docling_match_rows(
             rows: grid,
             cells: out_cells,
             unplaced,
+            ambiguous,
         },
         table_words,
         &cell_assignments,
@@ -1109,6 +1140,7 @@ mod tests {
                 },
             ],
             unplaced: Vec::new(),
+            ambiguous: Vec::new(),
         };
         let source = vec![
             PdfWord {
