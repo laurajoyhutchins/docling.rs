@@ -1,0 +1,70 @@
+name: Direct Docling TableFormer proof
+
+# One focused, immutable-source proof in this repository. This deliberately
+# avoids the cross-repository GCP verifier and any private PDF transfer.
+on:
+  push:
+    branches:
+      - fix/tableformer-prediction-geometry-preflight-20261107
+    paths:
+      - "crates/docling-pdf/**"
+      - "scripts/conformance/verify_direct.py"
+      - ".github/workflows/docling-direct-proof.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docling-direct-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Fetch exact Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+          rustc +1.96.0 --version
+          cargo +1.96.0 --version
+          cargo +1.96.0 fmt --version
+          cargo +1.96.0 clippy --version
+      - name: Check verifier negative controls
+        run: python3 scripts/conformance/verify_direct.py --self-test
+      - name: Run exact-head Rust tests and Clippy
+        run: |
+          python3 scripts/conformance/verify_direct.py \
+            --repo . --expected-sha "${{ github.sha }}" \
+            --mode focused --out "${{ runner.temp }}/docling-direct-proof"
+      - name: Print source-bound verification receipt
+        if: always()
+        run: |
+          if [ -f "${{ runner.temp }}/docling-direct-proof/receipt.json" ]; then
+            cat "${{ runner.temp }}/docling-direct-proof/receipt.json"
+            for f in "${{ runner.temp }}"/docling-direct-proof/[0-9][0-9]-*.log; do
+              [ -f "$f" ] || continue
+              echo "===== $(basename "$f") ====="
+              tail -n 35 "$f"
+            done
+          else
+            echo "No verification receipt; setup failed before direct proof."
+          fi
+      - name: Upload focused evidence (no private inputs)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: docling-direct-proof-${{ github.sha }}
+          path: ${{ runner.temp }}/docling-direct-proof/
+          if-no-files-found: ignore
+          retention-days: 3
