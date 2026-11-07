@@ -451,6 +451,29 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         ));
     }
 
+    // Model boxes must be valid before either assignment algorithm sees them.
+    // A nonfinite width/centre can poison overlap ordering and the column
+    // post-processor before the later first-class grid admission runs. Do not
+    // clamp or repair a model prediction into an apparently valid table.
+    // Preserve every in-region source word as unsupported evidence instead.
+    if cells.iter().any(|cell| {
+        let geometry = [cell.cx, cell.cy, cell.w, cell.h];
+        let corners = [
+            cell.cx - cell.w / 2.0,
+            cell.cx + cell.w / 2.0,
+            cell.cy - cell.h / 2.0,
+            cell.cy + cell.h / 2.0,
+        ];
+        !geometry.iter().chain(corners.iter()).all(|v| v.is_finite())
+            || cell.w <= 0.0
+            || cell.h <= 0.0
+    }) {
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted nonfinite or nonpositive cell geometry",
+        ));
+    }
+
     if !table_words.is_empty() && !simple_match() {
         return docling_match_rows(cells, region, &table_words, words);
     }
@@ -976,6 +999,58 @@ mod tests {
             row_section: false,
         };
         assert!(validate_word_partition(&source, &[vec![7]], &[cell], &[]).is_ok());
+    }
+
+    #[test]
+    fn malformed_predicted_boxes_are_rejected_before_matching() {
+        // A model can produce invalid normalized coordinates even when the
+        // source PDF's words are well formed. Neither simple nor Docling-style
+        // matching may convert those coordinates into admitted table cells.
+        let original = "  480 V & <phase>_  ";
+        let word = TextCell {
+            text: original.into(),
+            l: 5.0,
+            t: 5.0,
+            r: 70.0,
+            b: 15.0,
+        };
+        let valid = TableCell {
+            row: 0,
+            col: 0,
+            colspan: 1,
+            rowspan: 1,
+            tag: FCEL,
+            class: 2,
+            cx: 0.5,
+            cy: 0.5,
+            w: 0.4,
+            h: 0.3,
+        };
+        let malformed = [
+            (f32::NAN, 0.5, 0.4, 0.3),
+            (0.5, f32::INFINITY, 0.4, 0.3),
+            (0.5, 0.5, 0.0, 0.3),
+            (0.5, 0.5, -0.1, 0.3),
+            (0.5, 0.5, 0.4, f32::NAN),
+            (f32::MAX, 0.5, f32::MAX, 0.3),
+        ];
+        for (cx, cy, w, h) in malformed {
+            let prediction = TableCell {
+                cx,
+                cy,
+                w,
+                h,
+                ..valid.clone()
+            };
+            let grid = table_rows(&[prediction], [0.0, 0.0, 100.0, 100.0], &[word.clone()])
+                .expect("invalid geometry must retain an explicit rejected grid");
+            assert!(grid.cells.is_empty(), "invalid geometry admitted a cell");
+            assert!(grid.rows.is_empty(), "invalid geometry admitted a grid");
+            assert_eq!(grid.unplaced.len(), 1);
+            assert_eq!(grid.unplaced[0].source_cell_id, 0);
+            assert_eq!(grid.unplaced[0].text, original);
+            assert_eq!(grid.unplaced[0].bbox, [5.0, 5.0, 70.0, 15.0]);
+        }
     }
 
     #[test]
