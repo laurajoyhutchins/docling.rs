@@ -325,6 +325,7 @@ fn rejected_table_grid(source_words: &[PdfWord], reason: &str) -> TableGrid {
                 bbox: word.bbox.map(|value| value as f32),
             })
             .collect(),
+        ambiguous: Vec::new(),
     }
 }
 
@@ -451,6 +452,29 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         ));
     }
 
+    // Model boxes must be valid before either assignment algorithm sees them.
+    // A nonfinite width/centre can poison overlap ordering and the column
+    // post-processor before the later first-class grid admission runs. Do not
+    // clamp or repair a model prediction into an apparently valid table.
+    // Preserve every in-region source word as unsupported evidence instead.
+    if cells.iter().any(|cell| {
+        let geometry = [cell.cx, cell.cy, cell.w, cell.h];
+        let corners = [
+            cell.cx - cell.w / 2.0,
+            cell.cx + cell.w / 2.0,
+            cell.cy - cell.h / 2.0,
+            cell.cy + cell.h / 2.0,
+        ];
+        !geometry.iter().chain(corners.iter()).all(|v| v.is_finite())
+            || cell.w <= 0.0
+            || cell.h <= 0.0
+    }) {
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted nonfinite or nonpositive cell geometry",
+        ));
+    }
+
     if !table_words.is_empty() && !simple_match() {
         return docling_match_rows(cells, region, &table_words, words);
     }
@@ -546,6 +570,7 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
             rows: grid,
             cells: out_cells,
             unplaced,
+            ambiguous: Vec::new(),
         },
         &table_words,
         &cell_assignments,
@@ -653,8 +678,8 @@ fn docling_match_rows(
         dump_match_inputs(&dir, &tf_cells, &scaled_words);
     }
 
-    let (cells_wo, final_matches, _matcher_unplaced) =
-        crate::tf_match::match_and_post_process_with_unplaced(tf_cells, &scaled_words);
+    let (cells_wo, final_matches, _matcher_unplaced, ties) =
+        crate::tf_match::match_and_post_process_with_evidence(tf_cells, &scaled_words);
 
     // `_merge_tf_output`: group per (column, row) in ascending-pdf-id order; the
     // first word's table cell fixes the group's offsets and spans.
@@ -759,6 +784,34 @@ fn docling_match_rows(
         })
         .collect();
 
+    // Evidence of equally scored predictions must survive *beside* the
+    // selected visible cell. It is not permission to guess a new owner or
+    // discard a source word. Validate the tie IDs against the surviving
+    // assigned partition before exposing them.
+    let mut ambiguous = Vec::with_capacity(ties.len());
+    for tie in ties {
+        if !assigned_set.contains(&tie.pdf_id) || !tie.score.is_finite() {
+            return Some(rejected_table_grid(
+                table_words,
+                "ambiguous match inconsistent with assigned PDF source word",
+            ));
+        }
+        let Some(word) = table_words.iter().find(|word| word.id == tie.pdf_id) else {
+            return Some(rejected_table_grid(
+                table_words,
+                "ambiguous match refers to unknown PDF source word",
+            ));
+        };
+        ambiguous.push(crate::assemble::AmbiguousTableWord {
+            source_cell_id: word.id,
+            text: word.text.clone(),
+            bbox: word.bbox.map(|value| value as f32),
+            selected_cell_id: tie.chosen_cell_id,
+            competing_cell_ids: tie.competing_cell_ids,
+            overlap_score: tie.score,
+        });
+    }
+
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
     let mut out_cells = Vec::with_capacity(merged.len());
     for m in &merged {
@@ -791,6 +844,7 @@ fn docling_match_rows(
             rows: grid,
             cells: out_cells,
             unplaced,
+            ambiguous,
         },
         table_words,
         &cell_assignments,
@@ -979,6 +1033,58 @@ mod tests {
     }
 
     #[test]
+    fn malformed_predicted_boxes_are_rejected_before_matching() {
+        // A model can produce invalid normalized coordinates even when the
+        // source PDF's words are well formed. Neither simple nor Docling-style
+        // matching may convert those coordinates into admitted table cells.
+        let original = "  480 V & <phase>_  ";
+        let word = TextCell {
+            text: original.into(),
+            l: 5.0,
+            t: 5.0,
+            r: 70.0,
+            b: 15.0,
+        };
+        let valid = TableCell {
+            row: 0,
+            col: 0,
+            colspan: 1,
+            rowspan: 1,
+            tag: FCEL,
+            class: 2,
+            cx: 0.5,
+            cy: 0.5,
+            w: 0.4,
+            h: 0.3,
+        };
+        let malformed = [
+            (f32::NAN, 0.5, 0.4, 0.3),
+            (0.5, f32::INFINITY, 0.4, 0.3),
+            (0.5, 0.5, 0.0, 0.3),
+            (0.5, 0.5, -0.1, 0.3),
+            (0.5, 0.5, 0.4, f32::NAN),
+            (f32::MAX, 0.5, f32::MAX, 0.3),
+        ];
+        for (cx, cy, w, h) in malformed {
+            let prediction = TableCell {
+                cx,
+                cy,
+                w,
+                h,
+                ..valid.clone()
+            };
+            let grid = table_rows(&[prediction], [0.0, 0.0, 100.0, 100.0], &[word.clone()])
+                .expect("invalid geometry must retain an explicit rejected grid");
+            assert!(grid.cells.is_empty(), "invalid geometry admitted a cell");
+            assert!(grid.rows.is_empty(), "invalid geometry admitted a grid");
+            assert_eq!(grid.unplaced.len(), 1);
+            assert_eq!(grid.unplaced[0].source_cell_id, 0);
+            assert_eq!(grid.unplaced[0].text, original);
+            assert_eq!(grid.unplaced[0].bbox, [5.0, 5.0, 70.0, 15.0]);
+        }
+    }
+
+    #[test]
     fn invalid_zero_length_prediction_is_not_promoted_to_a_real_cell() {
         let prediction = TableCell {
             row: 0,
@@ -1034,6 +1140,7 @@ mod tests {
                 },
             ],
             unplaced: Vec::new(),
+            ambiguous: Vec::new(),
         };
         let source = vec![
             PdfWord {

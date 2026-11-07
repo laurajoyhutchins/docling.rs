@@ -2983,6 +2983,20 @@ pub struct TableGrid {
     /// Words from the source PDF within the table's region, but without
     /// evidence for either a row or a column in the predicted grid.
     pub unplaced: Vec<UnplacedTableWord>,
+    /// Competing equal-strength assignments, with the selected visible owner
+    /// retained separately. Consumers must not silently treat these as
+    /// source-verified table-cell associations.
+    pub ambiguous: Vec<AmbiguousTableWord>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AmbiguousTableWord {
+    pub source_cell_id: usize,
+    pub text: String,
+    pub bbox: [f32; 4],
+    pub selected_cell_id: usize,
+    pub competing_cell_ids: Vec<usize>,
+    pub overlap_score: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -3084,6 +3098,7 @@ mod table_grid_contract_tests {
             rows: vec![vec!["A".into(), "A".into(), "B".into()]],
             cells: vec![cell("A", 0, 0, 2), cell("B", 0, 2, 1)],
             unplaced: Vec::new(),
+            ambiguous: Vec::new(),
         }
     }
 
@@ -3168,6 +3183,7 @@ mod table_grid_contract_tests {
                 text: "480 V & <phase>_".to_string(),
                 bbox: [12.0, 20.0, 50.0, 30.0],
             }],
+            ambiguous: Vec::new(),
         };
         let (nodes, _) = assemble_page(&page, vec![region], &[Some(rejected)], &[None], None);
         assert!(
@@ -3223,6 +3239,7 @@ mod table_grid_contract_tests {
             rows: vec![vec!["A".into(), String::new()]],
             cells: vec![cell("A", 0, 0, 1)],
             unplaced: Vec::new(),
+            ambiguous: Vec::new(),
         };
         assert!(table.validate_cell_ownership().is_ok());
     }
@@ -3715,6 +3732,10 @@ pub fn assemble_page(
                     .as_ref()
                     .map(|g| g.unplaced.clone())
                     .unwrap_or_default();
+                let ambiguous = table_rows[i]
+                    .as_ref()
+                    .map(|g| g.ambiguous.clone())
+                    .unwrap_or_default();
                 // A rejected prediction is an evidence-only result, never an
                 // empty but apparently authoritative table in JSON/Markdown.
                 let rejected_table = table_rows[i]
@@ -3876,6 +3897,51 @@ pub fn assemble_page(
                     nodes.push(Node::Group {
                         label: "unplaced_table_text".into(),
                         name: Some(format!("table_region_{i}_unplaced_words")),
+                        layer: Some(docling_core::ContentLayer::Invisible),
+                        children,
+                    });
+                }
+                if !ambiguous.is_empty() {
+                    let children = ambiguous
+                        .into_iter()
+                        .map(|word| {
+                            let coord = |v: f32, extent: f32| -> u16 {
+                                if extent <= 0.0 {
+                                    return 0;
+                                }
+                                ((512.0 * f64::from(v) / f64::from(extent)).round() as i64)
+                                    .clamp(0, 511) as u16
+                            };
+                            let location = [
+                                coord(word.bbox[0], page.width),
+                                coord(word.bbox[1], page_h),
+                                coord(word.bbox[2], page.width),
+                                coord(word.bbox[3], page_h),
+                            ];
+                            Node::Group {
+                                label: "ambiguous_table_cell_assignment".into(),
+                                name: Some(format!(
+                                    "source_cell_{}_chosen_{}_competing_{:?}_score_{:.17}",
+                                    word.source_cell_id,
+                                    word.selected_cell_id,
+                                    word.competing_cell_ids,
+                                    word.overlap_score
+                                )),
+                                layer: None,
+                                children: vec![located(
+                                    location,
+                                    Node::Paragraph {
+                                        // Original parser text belongs to evidence,
+                                        // not the visible best-effort table output.
+                                        text: word.text,
+                                    },
+                                )],
+                            }
+                        })
+                        .collect();
+                    nodes.push(Node::Group {
+                        label: "table_assignment_ambiguities".into(),
+                        name: Some(format!("table_region_{i}_ambiguous_words")),
                         layer: Some(docling_core::ContentLayer::Invisible),
                         children,
                     });
