@@ -12,11 +12,11 @@ name: PDF conformance
 # a local model setup; the groundtruth numbers are printed and checked
 # against the doc's headline.
 #
-# Determinism: the scripts pin the scalar resize (`DOCLING_RS_SLOW_RESIZE=1`)
-# and the fp32 models, and ONNX Runtime's CPU kernels agree across x86_64
-# runners. Should this job ever drift on master alone — a borderline table
-# cell flipping with the runner's CPU, not with any PR — refresh the baseline
-# from the artifact, or mark the job `continue-on-error` until it settles.
+# Determinism: the scripts enforce single-threaded ONNX inference, scalar
+# resizing, fp32 model selection and the docling-parse renderer. If a run still
+# drifts, compare exact base/candidate revisions with pdf_repro.py and trace
+# the first divergent stage. Never refresh a baseline or waive a required
+# check on evidence of unexplained model drift.
 
 on:
   pull_request:
@@ -68,7 +68,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Check PDF conformance harness syntax
-        run: bash -n scripts/conformance/pdf_groundtruth.sh
+        run: |
+          bash -n scripts/conformance/pdf_groundtruth.sh
+          bash -n scripts/conformance/pdf_conformance.sh
+          python3 -m unittest discover -s scripts/conformance -p test_pdf_repro.py
 
       # rustup is preinstalled on GitHub-hosted runners; use it directly rather
       # than a marketplace toolchain action (the docling-project org allowlists
@@ -119,6 +122,13 @@ jobs:
         run: |
           scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib assembled_container_groups_preserve_children_and_plain_markdown
           scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --lib form_children_stay_together_in_reading_order
+
+      - name: Verify pixel renderer diagnostic
+        # The model-backed source-fidelity run still follows below. This
+        # small unit gate protects the independent RGB metric against incorrect
+        # channel denominators and unequal-size false positives.
+        shell: bash
+        run: scripts/ci/cargo_retry_ort.sh cargo test --release --locked -p docling-pdf --example renderer_diff
 
       - name: Snapshot conformance
         env:
