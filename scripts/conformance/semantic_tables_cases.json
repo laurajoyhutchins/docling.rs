@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "reference_notes": "Expected bindings were independently read from the linked source-PDF pages, not copied from the Python Docling JSON or Rust Markdown. Scores are semantic regressions, not proof that entire PDFs were extracted correctly. The HPO table prints OTSL/HTML as paired values in each metric cell; one number per distinct cell is NOT a valid source assertion. Test whole paired-cell contents in source-defined columns.",
+  "cases": [
+    {
+      "id": "ibm-redp5110-toc",
+      "source": "tests/data/pdf/sources/redp5110_sampled.pdf",
+      "source_git_blob": "fdfa5a781e7962c38857582ba931ff2c41b9825c",
+      "source_url": "https://www.redbooks.ibm.com/redpapers/pdfs/redp5110.pdf",
+      "original_pdf_pages": [
+        5
+      ],
+      "bindings": [
+        {
+          "name": "Notices belongs to Roman page vii",
+          "cells": [
+            {
+              "contains": "Notices"
+            },
+            {
+              "equals": "vii"
+            }
+          ]
+        },
+        {
+          "name": "Chapter 1 belongs to page 1",
+          "cells": [
+            {
+              "contains": "Chapter 1. Securing and protecting IBM DB2 data"
+            },
+            {
+              "equals": "1"
+            }
+          ]
+        },
+        {
+          "name": "Chapter 2 belongs to page 7",
+          "cells": [
+            {
+              "contains": "Chapter 2. Roles and separation of duties"
+            },
+            {
+              "equals": "7"
+            }
+          ]
+        },
+        {
+          "name": "Security Administrator subsection belongs to page 9",
+          "cells": [
+            {
+              "contains": "Security Administrator function: QIBM_DB_SECADM"
+            },
+            {
+              "equals": "9"
+            }
+          ]
+        }
+      ],
+      "reference_json": "tests/data/pdf/groundtruth/redp5110_sampled.json",
+      "reference_git_blob": "f8248a8efd4aa07206630473124e17f52b52d2dc",
+      "text_anchors": [
+        "Notices",
+        "Chapter 1. Securing and protecting IBM DB2 data",
+        "Chapter 2. Roles and separation of duties"
+      ],
+      "rights_status": "Existing committed sample of publicly accessible source; redistribution permission not independently verified",
+      "review_scope": "Reviewed table facts only; full source PDF digest, source-coordinate and regulatory target oracles absent"
+    },
+    {
+      "id": "otsl-paper-hpo-table",
+      "source": "tests/data/pdf/sources/2305.03393v1-pg9.pdf",
+      "source_git_blob": "d667217c2009127410fc15b8e9208381e555d5f0",
+      "source_url": "https://arxiv.org/pdf/2305.03393",
+      "original_pdf_pages": [
+        9
+      ],
+      "bindings": [
+        {
+          "name": "6×6 OTSL/HTML paired metrics stay in their printed row",
+          "cells": [
+            {
+              "equals": "6"
+            },
+            {
+              "equals": "6"
+            },
+            {
+              "equals": "OTSL HTML"
+            },
+            {
+              "equals": "0.965 0.969"
+            },
+            {
+              "equals": "0.934 0.927"
+            },
+            {
+              "equals": "0.955 0.955"
+            },
+            {
+              "equals": "0.88 0.857"
+            },
+            {
+              "equals": "2.73 5.39"
+            }
+          ]
+        },
+        {
+          "name": "4×4 OTSL/HTML paired metrics stay in their printed row",
+          "cells": [
+            {
+              "equals": "4"
+            },
+            {
+              "equals": "4"
+            },
+            {
+              "equals": "OTSL HTML"
+            },
+            {
+              "equals": "0.938 0.952"
+            },
+            {
+              "equals": "0.904 0.909"
+            },
+            {
+              "equals": "0.927 0.938"
+            },
+            {
+              "equals": "0.853 0.843"
+            },
+            {
+              "equals": "1.97 3.77"
+            }
+          ]
+        },
+        {
+          "name": "2×4 OTSL/HTML paired metrics stay in their printed row",
+          "cells": [
+            {
+              "equals": "2"
+            },
+            {
+              "equals": "4"
+            },
+            {
+              "equals": "OTSL HTML"
+            },
+            {
+              "equals": "0.923 0.945"
+            },
+            {
+              "equals": "0.897 0.901"
+            },
+            {
+              "equals": "0.915 0.931"
+            },
+            {
+              "equals": "0.859 0.834"
+            },
+            {
+              "equals": "1.91 3.81"
+            }
+          ]
+        },
+        {
+          "name": "4×2 OTSL/HTML paired metrics stay in their printed row",
+          "cells": [
+            {
+              "equals": "4"
+            },
+            {
+              "equals": "2"
+            },
+            {
+              "equals": "OTSL HTML"
+            },
+            {
+              "equals": "0.952 0.944"
+            },
+            {
+              "equals": "0.92 0.903"
+            },
+            {
+              "equals": "0.942 0.931"
+            },
+            {
+              "equals": "0.857 0.824"
+            },
+            {
+              "equals": "1.22 2"
+            }
+          ]
+        }
+      ],
+      "reference_json": "tests/data/pdf/groundtruth/2305.03393v1-pg9.json",
+      "reference_git_blob": "a0f7a074350f69d7618b74464af8734c0cc0fc35",
+      "text_anchors": [
+        "OTSL HTML"
+      ],
+      "reading_order": [
+        "6×6 OTSL/HTML paired metrics stay in their printed row",
+        "4×4 OTSL/HTML paired metrics stay in their printed row",
+        "2×4 OTSL/HTML paired metrics stay in their printed row",
+        "4×2 OTSL/HTML paired metrics stay in their printed row"
+      ],
+      "rights_status": "Existing committed sample of publicly accessible source; redistribution permission not independently verified",
+      "review_scope": "Reviewed table facts only; full source PDF digest, source-coordinate and regulatory target oracles absent"
+    }
+  ]
+}
