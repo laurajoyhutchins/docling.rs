@@ -2,6 +2,28 @@
 
 This is an **execution command in the source repository**, not another CI system. It reuses a local or disposable development VM's Cargo cache and pinned model files. `verify_direct.py` does not implement PDF extraction, emulate TableFormer, or generate ground truth.
 
+## Obtain the pinned Rust toolchain
+
+Rust need not be preinstalled. On a development VM with an approved network path,
+install the official rustup bootstrapper and the exact components required here:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsS https://sh.rustup.rs -o /tmp/rustup.sh
+sh /tmp/rustup.sh -y --profile minimal --no-modify-path
+. "$HOME/.cargo/env"
+rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+rustc +1.96.0 --version
+cargo +1.96.0 --version
+```
+
+GitHub-hosted runners already include rustup and only need the toolchain-install
+command. A GitHub artifact containing the complete compiler/toolchain could also
+be transferred to an offline VM, with its integrity independently checked.
+Downloading a bootstrapper alone does not establish verification: Cargo must
+fetch the locked dependencies and run the tests. The current chat VM has no
+outbound DNS, and the installed GitHub connector does not transfer arbitrary
+GitHub release binaries as local files.
+
 ## Fast proof at an exact commit
 
 From a **clean checkout** of the reviewed commit with Rust 1.96.0 (rustfmt and Clippy) available:
