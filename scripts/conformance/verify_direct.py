@@ -49,7 +49,7 @@ def source_identity(repo: Path, expected: str) -> dict:
     return {'commit': actual, 'tree': tree, 'clean': True}
 
 
-def model_identity(repo: Path) -> dict:
+def model_identity(repo: Path, manifest_path: Path) -> dict:
     modelroot = repo / '.models'
     manifest = {}
     for relative in MODEL_FILES:
@@ -57,15 +57,30 @@ def model_identity(repo: Path) -> dict:
         if not file.is_file() or file.stat().st_size == 0:
             raise ValueError(f'Pinned PDF model missing: {file}')
         manifest[relative] = {'sha256': digest(file), 'bytes': file.stat().st_size}
-    render = sorted((repo / '.docling-parse' / 'lib').glob('libdparse_render.*'))
-    if len(render) != 1 or not render[0].is_file() or render[0].stat().st_size == 0:
-        raise ValueError('Expected exactly one nonempty pinned docling-parse renderer library')
-    manifest['renderer'] = {'path': str(render[0]), 'sha256': digest(render[0]),
-                            'bytes': render[0].stat().st_size}
+    render = sorted(p for p in (repo / '.docling-parse' / 'lib').glob('libdparse_render.*')
+                    if p.is_file() and p.stat().st_size > 0)
+    if not render:
+        raise ValueError('Pinned docling-parse renderer library missing')
+    manifest['renderer'] = [{'path': str(p), 'sha256': digest(p), 'bytes': p.stat().st_size}
+                            for p in render]
+    trusted = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if trusted.get('schema') != 'docling-pdf-model-set/1.0':
+        raise ValueError('Unrecognized pinned-model manifest schema')
+    expected = trusted.get('model_sha256')
+    if not isinstance(expected, dict) or set(expected) != set(MODEL_FILES):
+        raise ValueError('Pinned-model manifest must cover exactly every required model')
+    for model in MODEL_FILES:
+        if expected[model] != manifest[model]['sha256']:
+            raise ValueError(f'Model does not match pinned reference: {model}')
+    render_expected = trusted.get('renderer_sha256')
+    if not isinstance(render_expected, str) or not any(
+            item['sha256'] == render_expected for item in manifest['renderer']):
+        raise ValueError('Renderer does not match pinned reference')
+    manifest['trusted_manifest_sha256'] = digest(manifest_path)
     return manifest
 
 
-def record_step(repo: Path, out: Path, label: str, argv: list[str], env: dict) -> dict:
+def record_step(repo: Path, out: Path, label: str, argv: list[str], env: dict, timeout: int = 7200) -> dict:
     path = out / f'{len(list(out.glob("[0-9][0-9]-*.log"))) + 1:02d}-{label}.log'
     started = time.monotonic()
     with path.open('wb') as stream:
@@ -73,8 +88,11 @@ def record_step(repo: Path, out: Path, label: str, argv: list[str], env: dict) -
         stream.flush()
         try:
             result = subprocess.run(argv, cwd=repo, env=env, stdout=stream,
-                                    stderr=subprocess.STDOUT, check=False)
+                                    stderr=subprocess.STDOUT, check=False, timeout=timeout)
             code = result.returncode
+        except subprocess.TimeoutExpired as err:
+            code = 124
+            stream.write((f'\nTIMEOUT after {timeout}s: {err}\n').encode())
         except OSError as err:
             code = 127
             stream.write((f'\nEXECUTION ERROR: {err}\n').encode())
@@ -97,9 +115,27 @@ def self_test():
         try:source_identity(root, 'moving-branch')
         except ValueError:pass
         else:raise AssertionError('moving refs must be refused')
-        try:model_identity(root)
+        try:model_identity(root, root / 'manifest.json')
         except ValueError:pass
         else:raise AssertionError('missing models must fail')
+        modelhashes = {}
+        for relative in MODEL_FILES:
+            file = root / '.models' / relative
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(('mock:' + relative).encode())
+            modelhashes[relative] = digest(file)
+        renderer = root / '.docling-parse' / 'lib' / 'libdparse_render.so'
+        renderer.parent.mkdir(parents=True, exist_ok=True)
+        renderer.write_bytes(b'mock-renderer')
+        manifest = root / 'manifest.json'
+        manifest.write_text(json.dumps({'schema':'docling-pdf-model-set/1.0',
+                                        'model_sha256':modelhashes,
+                                        'renderer_sha256':digest(renderer)}))
+        assert model_identity(root, manifest)['trusted_manifest_sha256'] == digest(manifest)
+        (root/'.models'/'tableformer'/'bbox.onnx').write_bytes(b'tampered')
+        try:model_identity(root,manifest)
+        except ValueError:pass
+        else:raise AssertionError('changed model must fail')
     print('ORCHESTRATOR_SELF_TEST_PASSED (not a Rust or PDF verification)')
 
 
@@ -111,6 +147,7 @@ def main():
     p.add_argument('--mode', choices=('focused', 'full'), default='focused')
     p.add_argument('--source-root', type=Path, help='Private PDF directory; required in full mode')
     p.add_argument('--benchmark-root', type=Path, help='Private reviewed table facts; required in full mode')
+    p.add_argument('--model-manifest', type=Path, help='Trusted model SHA-256 list; required in full mode')
     p.add_argument('--self-test', action='store_true')
     args = p.parse_args()
     if args.self_test:
@@ -153,9 +190,9 @@ def main():
         run('clippy', ['cargo','+1.96.0','clippy','--locked','-p','docling-pdf',
                        '--all-targets','--','-D','warnings'],env)
         if args.mode == 'full':
-            if not args.source_root or not args.benchmark_root:
-                raise ValueError('Full verification requires private source PDFs and reviewed references')
-            report['models'] = model_identity(repo)
+            if not args.source_root or not args.benchmark_root or not args.model_manifest:
+                raise ValueError('Full verification requires private sources, reviewed references, and a trusted model manifest')
+            report['models'] = model_identity(repo, args.model_manifest.resolve())
             run('pdf-groundtruth', ['bash','scripts/conformance/pdf_groundtruth.sh'], env)
             run('pdf-snapshots', ['bash','scripts/conformance/pdf_conformance.sh'], env)
             # Real model-backed outputs; never fabricate a table or use Python as extractor.
