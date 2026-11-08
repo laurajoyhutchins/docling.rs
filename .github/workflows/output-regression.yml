@@ -1,0 +1,70 @@
+name: Output regression
+
+# The complete model-free fixture and streaming corpus is expensive (roughly
+# five minutes on the last warm-cache run). Preserve coverage for changes to
+# conversion semantics and fixtures, not for every unrelated workspace PR.
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/docling/src/**'
+      - 'crates/docling/tests/**'
+      - 'crates/docling-core/src/**'
+      - 'crates/docling/Cargo.toml'
+      - 'crates/docling-core/Cargo.toml'
+      - 'tests/data/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/ci/test_fast.sh'
+      - '.github/workflows/output-regression.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'crates/docling/src/**'
+      - 'crates/docling/tests/**'
+      - 'crates/docling-core/src/**'
+      - 'crates/docling/Cargo.toml'
+      - 'crates/docling-core/Cargo.toml'
+      - 'tests/data/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/ci/test_fast.sh'
+      - '.github/workflows/output-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: output-regression-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+jobs:
+  regression:
+    name: full model-free output regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cache/ort.pyke.io
+            target
+          key: ${{ runner.os }}-cargo-v3-output-regression-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-v3-output-regression-
+      - name: Full corpus, buffered/streaming parity and all output formats
+        shell: bash
+        run: scripts/ci/cargo_retry_ort.sh cargo test -p docling --test regression --locked

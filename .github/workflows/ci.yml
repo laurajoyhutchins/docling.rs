@@ -140,14 +140,13 @@ jobs:
             https://github.com/docling-project/docling.rs/releases/download/models-v1/picture_classifier.onnx \
             || { rm -f .models/picture_classifier.onnx; echo "::warning::picture classifier download failed; its test skips"; }
 
-      # Pure-Rust unit tests + the output-regression suite. The PDF/image/METS
-      # snapshot tests need the layout/OCR/TableFormer models, so they are NOT
-      # run here — this job stays fast. --locked doubles as the
-      # guard that keeps the committed Cargo.lock in sync with the manifests
-      # (a Cargo.toml change without its lock update fails here).
+      # Fast model-free workspace tests. Three exhaustive corpus-wide
+      # regression/streaming sweeps run in output-regression.yml on relevant
+      # changes or by manual dispatch; all other workspace tests remain here.
+      # --locked ensures the committed Cargo.lock matches the manifests.
       - name: Test
         shell: bash
-        run: scripts/ci/cargo_retry_ort.sh cargo test --workspace --locked
+        run: bash scripts/ci/test_fast.sh
 
       # actions/cache saves target/ in its post-step, i.e. after this runs:
       # drop what is cheap to recreate (incremental data shouldn't exist with
