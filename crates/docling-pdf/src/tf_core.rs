@@ -405,6 +405,7 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         rows: grid,
         cells: out_cells,
         unplaced: Vec::new(),
+        ambiguous: Vec::new(),
     })
 }
 
@@ -507,8 +508,8 @@ fn docling_match_rows(
         dump_match_inputs(&dir, &tf_cells, &scaled_words);
     }
 
-    let (cells_wo, final_matches, unplaced) =
-        crate::tf_match::match_and_post_process_with_unplaced(tf_cells, &scaled_words);
+    let (cells_wo, final_matches, unplaced, ties) =
+        crate::tf_match::match_and_post_process_with_evidence(tf_cells, &scaled_words);
 
     // `_merge_tf_output`: group per (column, row) in ascending-pdf-id order; the
     // first word's table cell fixes the group's offsets and spans.
@@ -555,8 +556,55 @@ fn docling_match_rows(
             }
         }
     }
+    // The matcher can deliberately abstain when no logical cell has enough
+    // evidence to own a source word. A false `None` here would discard the
+    // unmatched source words and invite the downstream geometric fallback
+    // to make up a new table. Carry the original text and boxes on the
+    // standard invisible evidence layer even if no table grid survives.
+    let unplaced: Vec<crate::assemble::UnplacedTableWord> = unplaced
+        .into_iter()
+        .map(|w| crate::assemble::UnplacedTableWord {
+            source_cell_id: w.id,
+            text: w.text,
+            bbox: [
+                (w.bbox[0] / SCALE) as f32,
+                (w.bbox[1] / SCALE) as f32,
+                (w.bbox[2] / SCALE) as f32,
+                (w.bbox[3] / SCALE) as f32,
+            ],
+        })
+        .collect();
+    // Capture cross-slot overlap ties without removing the selected word
+    // from its visible cell. IDs and scores refer to original model predictions.
+    let ambiguous: Vec<crate::assemble::AmbiguousTableWord> = ties
+        .into_iter()
+        .filter_map(|tie| {
+            let word = scaled_words.iter().find(|w| w.id == tie.pdf_id)?;
+            Some(crate::assemble::AmbiguousTableWord {
+                source_cell_id: word.id,
+                text: word.text.clone(),
+                bbox: [
+                    (word.bbox[0] / SCALE) as f32,
+                    (word.bbox[1] / SCALE) as f32,
+                    (word.bbox[2] / SCALE) as f32,
+                    (word.bbox[3] / SCALE) as f32,
+                ],
+                selected_cell_id: tie.chosen_cell_id,
+                competing_cell_ids: tie.competing_cell_ids,
+                overlap_score: tie.score,
+            })
+        })
+        .collect();
     if merged.is_empty() {
-        return None;
+        if unplaced.is_empty() {
+            return None;
+        }
+        return Some(TableGrid {
+            rows: Vec::new(),
+            cells: Vec::new(),
+            unplaced,
+            ambiguous,
+        });
     }
 
     // `multi_table_predict`'s sort_row_col_indexes: compress the surviving
@@ -609,19 +657,8 @@ fn docling_match_rows(
     Some(TableGrid {
         rows: grid,
         cells: out_cells,
-        unplaced: unplaced
-            .into_iter()
-            .map(|w| crate::assemble::UnplacedTableWord {
-                source_cell_id: w.id,
-                text: w.text,
-                bbox: [
-                    (w.bbox[0] / SCALE) as f32,
-                    (w.bbox[1] / SCALE) as f32,
-                    (w.bbox[2] / SCALE) as f32,
-                    (w.bbox[3] / SCALE) as f32,
-                ],
-            })
-            .collect(),
+        unplaced,
+        ambiguous,
     })
 }
 
