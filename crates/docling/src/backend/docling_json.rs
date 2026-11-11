@@ -53,8 +53,399 @@ impl DeclarativeBackend for DoclingJsonBackend {
                 walk(c, &root, 0, &mut doc, &mut guard);
             }
         }
+        // Keep source-authored inline semantics in the existing typed tree when
+        // this JSON document is entirely representable by its text/group model.
+        // Other document kinds continue through the established flat path.
+        if let Some(tree) = text_only_item_tree(&root) {
+            // Page sizes already have a typed representation. Keep them in
+            // nodes, where the existing JSON tree writer reads them, instead
+            // of treating otherwise-safe PDF-derived text as unrepresentable.
+            doc.nodes
+                .extend(text_only_page_markers(&root).unwrap_or_default());
+            doc.tree = Some(tree);
+        }
         Ok(doc)
     }
+}
+
+/// Preserve source page geometry only when the Docling JSON writer can
+/// reproduce it with its existing PageInfo nodes. Images and unrepresentable
+/// floating-point sizes are not silently dropped or rounded into new facts.
+fn text_only_page_markers(root: &Value) -> Option<Vec<Node>> {
+    let Some(pages) = root.get("pages") else {
+        return Some(Vec::new());
+    };
+    let mut markers = Vec::new();
+    for (key, item) in pages.as_object()? {
+        let page_no: usize = key.parse().ok()?;
+        if page_no == 0
+            || item
+                .as_object()?
+                .keys()
+                .any(|k| !matches!(k.as_str(), "page_no" | "size"))
+            || item.get("page_no")?.as_u64()? != page_no as u64
+        {
+            return None;
+        }
+        let size = item.get("size")?.as_object()?;
+        if size
+            .keys()
+            .any(|k| !matches!(k.as_str(), "width" | "height"))
+        {
+            return None;
+        }
+        let dimension = |k: &str| -> Option<f32> {
+            let source = size.get(k)?.as_f64()?;
+            if !source.is_finite() || source <= 0.0 {
+                return None;
+            }
+            let stored = source as f32;
+            let round_tripped = ((stored as f64) * 100.0).round() / 100.0;
+            ((round_tripped - source).abs() < 0.000_000_1).then_some(stored)
+        };
+        markers.push(Node::PageInfo {
+            page_no,
+            width: dimension("width")?,
+            height: dimension("height")?,
+        });
+    }
+    Some(markers)
+}
+
+/// The JSON reader's flat nodes serve the legacy Markdown serializer, but
+/// their escaped Markdown text is *not* a faithful representation of source
+/// formatting and hyperlinks. For a purely textual Docling JSON input, keep
+/// the original typed item relationships in docling-core's existing ItemTree.
+/// This has an intentionally strict admission boundary: when a field, source
+/// type or graph shape cannot be represented without loss, use the legacy
+/// path rather than silently discard source semantics. No second JSON model.
+fn text_only_item_tree(root: &Value) -> Option<docling_core::tree::ItemTree> {
+    use docling_core::tree::{Formatting, ItemTree, ListMeta, TreeKind, TreeProv};
+    use docling_core::{ContentLayer, Script};
+
+    for bucket in [
+        "tables",
+        "pictures",
+        "field_regions",
+        "field_items",
+        "form_items",
+        "key_value_items",
+    ] {
+        if root
+            .get(bucket)
+            .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+        {
+            return None;
+        }
+    }
+    // Source-level metadata is not part of ItemTree, and the current JSON
+    // reader does not request metadata JSON output after loading it. This
+    // narrower typed path must never claim a lossless document round-trip
+    // for such input.
+    if root.get("metadata").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    // Retain all content layers, not just the body. The flat reader does not
+    // currently assemble a separate furniture tree.
+    if root
+        .get("furniture")
+        .and_then(|v| v.get("children"))
+        .and_then(Value::as_array)
+        .is_some_and(|children| !children.is_empty())
+    {
+        return None;
+    }
+    // The tree writer reads a source page map from Node::PageInfo; ensure
+    // every page entry is representable before admitting a typed round trip.
+    text_only_page_markers(root)?;
+    let texts = root.get("texts")?.as_array()?;
+    let groups = root.get("groups")?.as_array()?;
+    let body = root.get("body")?.get("children")?.as_array()?;
+    if texts.len().checked_add(groups.len())? > 10_000 {
+        return None;
+    }
+    let mut tree = ItemTree::default();
+    let layer_of = |item: &Value| -> Option<Option<ContentLayer>> {
+        Some(
+            match item
+                .get("content_layer")
+                .and_then(Value::as_str)
+                .unwrap_or("body")
+            {
+                "body" => None,
+                "furniture" => Some(ContentLayer::Furniture),
+                "notes" => Some(ContentLayer::Notes),
+                "invisible" => Some(ContentLayer::Invisible),
+                _ => return None,
+            },
+        )
+    };
+    for (index, item) in texts.iter().enumerate() {
+        let o = item.as_object()?;
+        if o.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "self_ref"
+                    | "parent"
+                    | "children"
+                    | "content_layer"
+                    | "label"
+                    | "text"
+                    | "orig"
+                    | "formatting"
+                    | "hyperlink"
+                    | "level"
+                    | "enumerated"
+                    | "marker"
+                    | "prov"
+                    | "comments"
+                    | "source"
+            )
+        }) {
+            return None;
+        }
+        let expected = format!("#/texts/{index}");
+        if item
+            .get("self_ref")
+            .is_some_and(|r| r.as_str() != Some(expected.as_str()))
+        {
+            return None;
+        }
+        // Ill-typed present fields are not equivalent to absent fields: a
+        // typed export must never erase authored link targets or run text.
+        if ["orig", "hyperlink"].iter().any(|field| {
+            item.get(*field)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+        }) {
+            return None;
+        }
+        if item
+            .get("comments")
+            .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+            || item
+                .get("source")
+                .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
+        {
+            return None;
+        }
+        let label = item.get("label").and_then(Value::as_str).unwrap_or("text");
+        if !matches!(
+            label,
+            "text"
+                | "paragraph"
+                | "footnote"
+                | "caption"
+                | "title"
+                | "section_header"
+                | "list_item"
+                | "formula"
+        ) {
+            return None;
+        }
+        let text = item.get("text")?.as_str()?.to_owned();
+        let formatting = match item.get("formatting").filter(|v| !v.is_null()) {
+            Some(f) => {
+                let map = f.as_object()?;
+                if map.keys().any(|k| {
+                    !matches!(
+                        k.as_str(),
+                        "bold" | "italic" | "underline" | "strikethrough" | "script"
+                    )
+                }) {
+                    return None;
+                }
+                let flag = |k: &str| -> Option<bool> {
+                    match map.get(k) {
+                        Some(v) => v.as_bool(),
+                        None => Some(false),
+                    }
+                };
+                let script = match f.get("script") {
+                    None | Some(Value::Null) => Script::Baseline,
+                    Some(Value::String(s)) if s == "baseline" => Script::Baseline,
+                    Some(Value::String(s)) if s == "sub" => Script::Sub,
+                    Some(Value::String(s)) if s == "super" => Script::Super,
+                    _ => return None,
+                };
+                Some(Formatting {
+                    bold: flag("bold")?,
+                    italic: flag("italic")?,
+                    underline: flag("underline")?,
+                    strikethrough: flag("strikethrough")?,
+                    script,
+                })
+            }
+            None => None,
+        };
+        let list = if label == "list_item" {
+            Some(ListMeta {
+                enumerated: item
+                    .get("enumerated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                marker: item
+                    .get("marker")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            })
+        } else {
+            None
+        };
+        let level = if label == "section_header" {
+            Some(u8::try_from(item.get("level")?.as_u64()?).ok()?)
+        } else {
+            None
+        };
+        let id = tree.add(
+            None,
+            layer_of(item)?,
+            TreeKind::Text {
+                label: label.to_owned(),
+                text,
+                orig: item.get("orig").and_then(Value::as_str).map(str::to_owned),
+                formatting,
+                hyperlink: item
+                    .get("hyperlink")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                level,
+                list,
+            },
+        );
+        if let Some(prov) = item.get("prov").filter(|v| !v.is_null()) {
+            let entries = prov.as_array()?;
+            if entries.len() > 1 {
+                return None;
+            }
+            if let Some(p) = entries.first() {
+                let bbox = p.get("bbox")?;
+                let number = |name: &str| -> Option<f64> {
+                    let n = bbox.get(name)?.as_f64()?;
+                    n.is_finite().then_some(n)
+                };
+                let span = p.get("charspan")?.as_array()?;
+                if span.len() != 2 {
+                    return None;
+                }
+                let origin = match bbox.get("coord_origin")?.as_str()? {
+                    "TOPLEFT" => false,
+                    "BOTTOMLEFT" => true,
+                    _ => return None,
+                };
+                tree.items[id].prov = Some(TreeProv {
+                    page_no: usize::try_from(p.get("page_no")?.as_u64()?).ok()?,
+                    bbox: [number("l")?, number("t")?, number("r")?, number("b")?],
+                    bottom_left: origin,
+                    charspan: [
+                        usize::try_from(span[0].as_u64()?).ok()?,
+                        usize::try_from(span[1].as_u64()?).ok()?,
+                    ],
+                });
+            }
+        }
+    }
+    for (index, item) in groups.iter().enumerate() {
+        let o = item.as_object()?;
+        if o.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "self_ref" | "parent" | "children" | "content_layer" | "label" | "name"
+            )
+        }) {
+            return None;
+        }
+        let expected = format!("#/groups/{index}");
+        if item
+            .get("self_ref")
+            .is_some_and(|r| r.as_str() != Some(expected.as_str()))
+        {
+            return None;
+        }
+        if item.get("name").is_some_and(|v| !v.is_string()) {
+            return None;
+        }
+        let label = item.get("label")?.as_str()?;
+        if !matches!(
+            label,
+            "inline" | "section" | "unspecified" | "list" | "ordered_list"
+        ) {
+            return None;
+        }
+        tree.add(
+            None,
+            layer_of(item)?,
+            TreeKind::Group {
+                label: label.to_owned(),
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("group")
+                    .to_owned(),
+            },
+        );
+    }
+    let resolve_id = |r: &Value| -> Option<usize> {
+        let s = r.get("$ref")?.as_str()?;
+        if let Some(n) = s.strip_prefix("#/texts/") {
+            let id: usize = n.parse().ok()?;
+            return (id < texts.len()).then_some(id);
+        }
+        let n: usize = s.strip_prefix("#/groups/")?.parse().ok()?;
+        (n < groups.len()).then_some(texts.len() + n)
+    };
+    for (id, raw) in texts.iter().chain(groups).enumerate() {
+        tree.items[id].children = match raw.get("children") {
+            Some(v) => v
+                .as_array()?
+                .iter()
+                .map(&resolve_id)
+                .collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
+    }
+    tree.body = body.iter().map(&resolve_id).collect::<Option<Vec<_>>>()?;
+    // Reject cycles, duplicate ownership, orphan items, and stale parent
+    // pointers. Never normalize a malformed graph into apparently valid JSON.
+    let mut seen = vec![false; tree.items.len()];
+    let mut stack: Vec<(usize, Option<usize>, usize)> =
+        tree.body.iter().copied().map(|id| (id, None, 0)).collect();
+    while let Some((id, parent, depth)) = stack.pop() {
+        if depth >= MAX_DEPTH || seen[id] {
+            return None;
+        }
+        seen[id] = true;
+        tree.items[id].parent = parent;
+        let raw = if id < texts.len() {
+            &texts[id]
+        } else {
+            &groups[id - texts.len()]
+        };
+        if let Some(declared_parent) = raw.get("parent") {
+            let declared = declared_parent.get("$ref")?.as_str()?;
+            let expected = parent.map_or_else(
+                || "#/body".to_owned(),
+                |p| {
+                    if p < texts.len() {
+                        format!("#/texts/{p}")
+                    } else {
+                        format!("#/groups/{}", p - texts.len())
+                    }
+                },
+            );
+            if declared != expected {
+                return None;
+            }
+        }
+        stack.extend(
+            tree.items[id]
+                .children
+                .iter()
+                .copied()
+                .map(|child| (child, Some(id), depth + 1)),
+        );
+    }
+    seen.iter().all(|&s| s).then_some(tree)
 }
 
 /// Every table of the file against the cell budget (#861; docling-core
@@ -1183,5 +1574,317 @@ mod tests {
             md.starts_with("# Doc\n\n## [Sec](http://x)\n\n- one\n- **two**"),
             "got:\n{md}"
         );
+    }
+
+    /// The source JSON's raw text and formatting are distinct facts. Rebuilding
+    /// them from Markdown would corrupt escaped links, bold/italic spans and
+    /// subscript semantics. Preserve them as typed ItemTree fields instead.
+    #[test]
+    fn text_only_inline_group_preserves_source_semantics_through_two_json_loads() {
+        let source = serde_json::json!({
+            "schema_name": "DoclingDocument",
+            "version": "1.10.0",
+            "name": "typed-inline",
+            "body": {"children": [
+                {"$ref": "#/groups/0"}, {"$ref": "#/texts/4"}
+            ]},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "Plain"
+                },
+                {
+                    "self_ref": "#/texts/1", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "R&D <safe>",
+                    "formatting": {"bold": true, "italic": true}
+                },
+                {
+                    "self_ref": "#/texts/2", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "A_B & C",
+                    "hyperlink": "https://example.org/r?x=1&y=a_b",
+                    "prov": [{
+                        "page_no": 1,
+                        "bbox": {"l": 2.5, "t": 3.0, "r": 8.25, "b": 10.0,
+                                 "coord_origin": "TOPLEFT"},
+                        "charspan": [0, 7]
+                    }]
+                },
+                {
+                    "self_ref": "#/texts/3", "parent": {"$ref": "#/groups/0"},
+                    "children": [], "label": "text", "text": "2",
+                    "formatting": {"script": "sub"}
+                },
+                {
+                    "self_ref": "#/texts/4", "parent": {"$ref": "#/body"},
+                    "children": [], "label": "formula", "text": "x_i+y",
+                    "orig": "x_i+y"
+                }
+            ],
+            "groups": [{
+                "self_ref": "#/groups/0", "parent": {"$ref": "#/body"},
+                "children": [
+                    {"$ref": "#/texts/0"}, {"$ref": "#/texts/1"},
+                    {"$ref": "#/texts/2"}, {"$ref": "#/texts/3"}
+                ], "name": "inline", "label": "inline"
+            }],
+            "tables": [], "pictures": [], "pages": {}
+        });
+
+        let read = |v: &serde_json::Value| {
+            DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "inline.json",
+                    InputFormat::JsonDocling,
+                    v.to_string().into_bytes(),
+                ))
+                .unwrap()
+        };
+        let doc = read(&source);
+        assert!(
+            doc.tree.is_some(),
+            "a supported inline source needs a typed tree"
+        );
+        let before_markdown = doc.export_to_markdown();
+        let first = doc.export_to_json_value();
+
+        assert_eq!(first["texts"][1]["text"], "R&D <safe>");
+        assert_eq!(first["texts"][1]["orig"], "R&D <safe>");
+        assert_eq!(first["texts"][1]["formatting"]["bold"], true);
+        assert_eq!(first["texts"][1]["formatting"]["italic"], true);
+        assert_eq!(first["texts"][2]["text"], "A_B & C");
+        assert_eq!(
+            first["texts"][2]["hyperlink"],
+            "https://example.org/r?x=1&y=a_b"
+        );
+        assert_eq!(first["texts"][2]["prov"][0]["page_no"], 1);
+        assert_eq!(first["texts"][2]["prov"][0]["bbox"]["l"], 2.5);
+        assert_eq!(first["texts"][3]["formatting"]["script"], "sub");
+        assert_eq!(first["texts"][4]["label"], "formula");
+        assert_eq!(first["texts"][4]["orig"], "x_i+y");
+        assert_eq!(first["groups"][0]["label"], "inline");
+        assert_eq!(first["groups"][0]["children"].as_array().unwrap().len(), 4);
+        assert_eq!(first["body"]["children"][0]["$ref"], "#/groups/0");
+
+        let reread = read(&first);
+        assert!(reread.tree.is_some());
+        assert_eq!(reread.export_to_markdown(), before_markdown);
+        let second = reread.export_to_json_value();
+        assert_eq!(first["texts"], second["texts"]);
+        assert_eq!(first["groups"], second["groups"]);
+        assert_eq!(first["body"], second["body"]);
+    }
+
+    #[test]
+    fn invalid_or_unrepresentable_json_tree_never_fakes_a_typed_roundtrip() {
+        let base = serde_json::json!({
+            "schema_name": "DoclingDocument", "name": "bad",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [{
+                "self_ref": "#/texts/0", "parent": {"$ref": "#/body"},
+                "label": "text", "text": "Hello", "children": []
+            }],
+            "groups": [], "tables": [], "pictures": [], "pages": {}
+        });
+        let read = |v: &serde_json::Value| {
+            DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "bad.json",
+                    InputFormat::JsonDocling,
+                    v.to_string().into_bytes(),
+                ))
+                .unwrap()
+        };
+        assert!(read(&base).tree.is_some());
+        let mut duplicated = base.clone();
+        duplicated["body"]["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"$ref": "#/texts/0"}));
+        assert!(
+            read(&duplicated).tree.is_none(),
+            "duplicate refs are not a valid tree"
+        );
+        let mut unsupported = base.clone();
+        unsupported["texts"][0]["unsupported_annotation"] = serde_json::json!("cannot preserve");
+        assert!(
+            read(&unsupported).tree.is_none(),
+            "unknown source semantics must not vanish"
+        );
+        let mut with_pages = base.clone();
+        with_pages["pages"]["1"] = serde_json::json!({
+            "page_no": 1, "size": {"width": 612.0, "height": 792.0}
+        });
+        let loaded = read(&with_pages);
+        assert!(
+            loaded.tree.is_some(),
+            "representable page sizes should be retained"
+        );
+        let round_trip = loaded.export_to_json_value();
+        assert_eq!(round_trip["pages"]["1"]["page_no"], 1);
+        assert_eq!(round_trip["pages"]["1"]["size"]["width"], 612.0);
+        assert_eq!(round_trip["pages"]["1"]["size"]["height"], 792.0);
+        let mut unsafe_page = with_pages;
+        unsafe_page["pages"]["1"]["image"] = serde_json::json!({
+            "uri": "data:image/png;base64,AAAA"
+        });
+        assert!(
+            read(&unsafe_page).tree.is_none(),
+            "page image evidence must not be dropped"
+        );
+    }
+
+    /// Existing DOCX reference fixtures were admitted against upstream docling
+    /// 2.129.0 (docs/MIGRATION.md, full conformance sweep). They pin both the
+    /// structural JSON and independently exported Markdown. Do not regenerate
+    /// either expected file as part of a JSON reader change.
+    #[test]
+    fn pinned_docling_inline_fixtures_preserve_fields_and_markdown() {
+        fn check(name: &str, fixture: &str, markdown: &str) {
+            let expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let read = |value: &serde_json::Value| {
+                DoclingJsonBackend
+                    .convert(&SourceDocument::from_bytes(
+                        "inline.json",
+                        InputFormat::JsonDocling,
+                        value.to_string().into_bytes(),
+                    ))
+                    .unwrap()
+            };
+            let document = read(&expected);
+            assert!(
+                document.tree.is_some(),
+                "{name}: source text, inline items, and references must remain typed"
+            );
+            let first = document.export_to_json_value();
+            for key in ["texts", "groups", "body"] {
+                assert_eq!(
+                    first[key], expected[key],
+                    "{name}: upstream {key} fields must survive JSON import"
+                );
+            }
+            assert_eq!(
+                document.export_to_markdown(),
+                markdown,
+                "{name}: the independent Markdown reference changed"
+            );
+
+            let reread = read(&first);
+            assert!(
+                reread.tree.is_some(),
+                "{name}: second import lost typed structure"
+            );
+            let second = reread.export_to_json_value();
+            for key in ["texts", "groups", "body"] {
+                assert_eq!(second[key], first[key], "{name}: {key} drifted on reimport");
+            }
+            assert_eq!(reread.export_to_markdown(), markdown);
+        }
+
+        check(
+            "docx_bold_tail",
+            include_str!("../../tests/data/docx/expected/docx_bold_tail.docx.json"),
+            include_str!("../../tests/data/docx/expected/docx_bold_tail.docx.md"),
+        );
+        check(
+            "equations",
+            include_str!("../../tests/data/docx/expected/equations.docx.json"),
+            include_str!("../../tests/data/docx/expected/equations.docx.md"),
+        );
+        check(
+            "omml_multi_equation_paragraph",
+            include_str!("../../tests/data/docx/expected/omml_multi_equation_paragraph.docx.json"),
+            include_str!("../../tests/data/docx/expected/omml_multi_equation_paragraph.docx.md"),
+        );
+    }
+
+    /// The broad unit_test_formatting document includes pictures/furniture,
+    /// beyond the typed JSON reader's admitted boundary. Select its genuine
+    /// upstream-derived combined bold/italic hyperlink span without weakening
+    /// that boundary or teaching the reader to parse Markdown syntax as facts.
+    #[test]
+    fn pinned_docling_combined_style_hyperlink_retains_exact_url() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/data/docx/expected/unit_test_formatting.docx.json"
+        ))
+        .unwrap();
+        let mut span = fixture["texts"][4].clone();
+        span["self_ref"] = serde_json::json!("#/texts/0");
+        span["parent"] = serde_json::json!({"$ref": "#/body"});
+        let minimal = serde_json::json!({
+            "schema_name": "DoclingDocument",
+            "version": "1.10.0",
+            "name": "upstream-combined-format-link",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [span],
+            "groups": [],
+            "tables": [],
+            "pictures": [],
+            "pages": {}
+        });
+        let read = |value: &serde_json::Value| {
+            DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "inline-link.json",
+                    InputFormat::JsonDocling,
+                    value.to_string().into_bytes(),
+                ))
+                .unwrap()
+        };
+        let document = read(&minimal);
+        assert!(document.tree.is_some());
+        let first = document.export_to_json_value();
+        for key in ["orig", "text", "formatting", "hyperlink"] {
+            assert_eq!(first["texts"][0][key], minimal["texts"][0][key], "{key}");
+        }
+        assert_eq!(first["texts"][0]["formatting"]["bold"], true);
+        assert_eq!(first["texts"][0]["formatting"]["italic"], true);
+        assert_eq!(
+            first["texts"][0]["hyperlink"],
+            "https://github.com/DS4SD/docling"
+        );
+        let reread = read(&first);
+        assert!(reread.tree.is_some());
+        assert_eq!(reread.export_to_json_value()["texts"][0], first["texts"][0]);
+        assert_eq!(reread.export_to_markdown(), document.export_to_markdown());
+    }
+
+    /// Invalid optional fields must never masquerade as absent fields: doing
+    /// so could silently erase URL identity or authored run formatting.
+    #[test]
+    fn malformed_inline_fields_are_not_admitted_as_lossless() {
+        let mut source = serde_json::json!({
+            "schema_name": "DoclingDocument",
+            "name": "typed-invalid",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [{"self_ref": "#/texts/0", "parent": {"$ref": "#/body"},
+                       "children": [], "label": "text", "text": "hello"}],
+            "groups": [],
+            "tables": [],
+            "pictures": []
+        });
+        for (field, invalid) in [
+            (
+                "hyperlink",
+                serde_json::json!({"uri": "https://example.com"}),
+            ),
+            ("orig", serde_json::json!(12)),
+            ("formatting", serde_json::json!({"bold": "true"})),
+            ("formatting", serde_json::json!({"script": 12})),
+            ("parent", serde_json::json!({"wrong": "#/body"})),
+        ] {
+            source["texts"][0][field] = invalid;
+            let document = DoclingJsonBackend
+                .convert(&SourceDocument::from_bytes(
+                    "invalid.json",
+                    InputFormat::JsonDocling,
+                    source.to_string().into_bytes(),
+                ))
+                .unwrap();
+            assert!(
+                document.tree.is_none(),
+                "{field}: invalid semantics were dropped"
+            );
+            source["texts"][0].as_object_mut().unwrap().remove(field);
+        }
     }
 }
