@@ -3005,6 +3005,242 @@ pub struct UnplacedTableWord {
     pub bbox: [f32; 4],
 }
 
+/// Reject structurally unsupported TableFormer cells before their grid is
+/// admitted to the document. Empty slots are allowed, but every predicted cell
+/// must own a distinct, in-bounds rectangle whose dense text agrees with it.
+impl TableGrid {
+    pub fn validate_cell_ownership(&self) -> Result<(), String> {
+        let num_rows = self.rows.len();
+        let num_cols = self.rows.first().map_or(0, Vec::len);
+        if num_rows == 0 || num_cols == 0 {
+            return Err("empty predicted table grid".to_string());
+        }
+        if self.rows.iter().any(|row| row.len() != num_cols) {
+            return Err("ragged predicted table grid".to_string());
+        }
+        let mut owners = vec![vec![None::<usize>; num_cols]; num_rows];
+        for (index, cell) in self.cells.iter().enumerate() {
+            if cell.row_span == 0 || cell.col_span == 0 {
+                return Err(format!("cell {index}: zero-length span"));
+            }
+            let end_row = cell
+                .start_row
+                .checked_add(cell.row_span)
+                .ok_or_else(|| format!("cell {index}: row span overflow"))?;
+            let end_col = cell
+                .start_col
+                .checked_add(cell.col_span)
+                .ok_or_else(|| format!("cell {index}: column span overflow"))?;
+            if end_row > num_rows || end_col > num_cols {
+                return Err(format!("cell {index}: span outside predicted grid"));
+            }
+            if let Some([left, top, right, bottom]) = cell.bbox {
+                if ![left, top, right, bottom].iter().all(|v| v.is_finite())
+                    || right < left
+                    || bottom < top
+                {
+                    return Err(format!("cell {index}: invalid bounding box"));
+                }
+            }
+            let owned_rows = owners.iter_mut().enumerate().skip(cell.start_row);
+            for (row, row_owners) in owned_rows.take(cell.row_span) {
+                let owned_cols = row_owners.iter_mut().enumerate().skip(cell.start_col);
+                for (col, slot_owner) in owned_cols.take(cell.col_span) {
+                    if let Some(other) = *slot_owner {
+                        return Err(format!(
+                            "cell {index}: grid slot ({row},{col}) already owned by cell {other}"
+                        ));
+                    }
+                    if self.rows[row][col] != cell.text {
+                        return Err(format!(
+                            "cell {index}: grid slot ({row},{col}) disagrees with its source cell"
+                        ));
+                    }
+                    *slot_owner = Some(index);
+                }
+            }
+        }
+        for (r, row) in self.rows.iter().enumerate() {
+            for (c, text) in row.iter().enumerate() {
+                if owners[r][c].is_none() && !text.is_empty() {
+                    return Err(format!(
+                        "grid slot ({r},{c}) has text without first-class ownership"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod table_grid_contract_tests {
+    use super::TableGrid;
+    use docling_core::TableCell;
+
+    fn cell(text: &str, row: usize, col: usize, colspan: usize) -> TableCell {
+        TableCell {
+            text: text.into(),
+            bbox: Some([0.0, 0.0, 10.0, 10.0]),
+            start_row: row,
+            start_col: col,
+            row_span: 1,
+            col_span: colspan,
+            column_header: false,
+            row_header: false,
+            row_section: false,
+        }
+    }
+
+    fn example() -> TableGrid {
+        TableGrid {
+            rows: vec![vec!["A".into(), "A".into(), "B".into()]],
+            cells: vec![cell("A", 0, 0, 2), cell("B", 0, 2, 1)],
+            unplaced: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn valid_spanning_cells_can_be_admitted() {
+        assert!(example().validate_cell_ownership().is_ok());
+    }
+
+    #[test]
+    fn conflicting_grid_ownership_is_rejected() {
+        let mut table = example();
+        table.cells.push(cell("A", 0, 1, 1));
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("already owned"));
+    }
+
+    #[test]
+    fn invalid_spans_and_overflows_are_rejected() {
+        let mut table = example();
+        table.cells[0].col_span = 0;
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("zero-length"));
+
+        let mut table = example();
+        table.cells[0].start_row = usize::MAX;
+        table.cells[0].row_span = 2;
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("overflow"));
+
+        let mut table = example();
+        table.cells[0].col_span = 4;
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("outside"));
+    }
+
+    #[test]
+    fn invalid_geometry_or_wrong_dense_text_is_rejected() {
+        let mut table = example();
+        table.cells[0].bbox = Some([f32::NAN, 0.0, 10.0, 10.0]);
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("bounding box"));
+
+        let mut table = example();
+        table.rows[0][1] = "wrong".into();
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("disagrees"));
+    }
+
+    #[test]
+    fn rejected_table_is_not_serialized_even_without_flattened_region_text() {
+        use super::assemble_page;
+        use crate::layout::Region;
+        use crate::pdfium_backend::PdfPage;
+        use docling_core::Node;
+
+        let page = PdfPage::from_cells(200.0, 200.0, 2.0, Vec::new());
+        let region = Region {
+            label: "table",
+            score: 0.95,
+            l: 10.0,
+            t: 10.0,
+            r: 190.0,
+            b: 90.0,
+        };
+        let rejected = TableGrid {
+            rows: Vec::new(),
+            cells: Vec::new(),
+            unplaced: vec![super::UnplacedTableWord {
+                source_cell_id: 17,
+                text: "480 V & <phase>_".to_string(),
+                bbox: [12.0, 20.0, 50.0, 30.0],
+            }],
+        };
+        let (nodes, _) = assemble_page(&page, vec![region], &[Some(rejected)], &[None], None);
+        assert!(
+            !nodes.iter().any(|n| match n {
+                Node::Table(_) => true,
+                Node::Located { inner, .. } => matches!(inner.as_ref(), Node::Table(_)),
+                _ => false,
+            }),
+            "a rejected grid must never become a real table: {nodes:?}"
+        );
+        assert!(
+            nodes.iter().any(|n| {
+                matches!(n, Node::Group { label, .. } if label == "unplaced_table_text")
+            }),
+            "unplaced source words must survive assembly: {nodes:?}"
+        );
+        let mut doc = docling_core::DoclingDocument::new("unsupported");
+        doc.nodes = nodes;
+        let json = doc.export_to_json_value();
+        assert_eq!(json["tables"].as_array().map(Vec::len), Some(0));
+        let source_evidence = json.to_string();
+        assert!(
+            source_evidence.contains("480 V & <phase>_"),
+            "source words must not acquire Markdown escapes in JSON evidence"
+        );
+        assert!(
+            source_evidence.contains("source_cell_17"),
+            "source word identity must survive serialization"
+        );
+    }
+
+    #[test]
+    fn unowned_nonempty_grid_slot_is_rejected() {
+        let mut table = example();
+        table.cells.pop();
+        assert!(table
+            .validate_cell_ownership()
+            .unwrap_err()
+            .contains("text without first-class ownership"));
+    }
+
+    #[test]
+    fn empty_unowned_grid_slot_is_permitted() {
+        let mut table = example();
+        table.cells.pop();
+        table.rows[0][2].clear();
+        assert!(table.validate_cell_ownership().is_ok());
+    }
+
+    #[test]
+    fn unowned_empty_grid_slots_are_not_invented_as_cells() {
+        let table = TableGrid {
+            rows: vec![vec!["A".into(), String::new()]],
+            cells: vec![cell("A", 0, 0, 1)],
+            unplaced: Vec::new(),
+        };
+        assert!(table.validate_cell_ownership().is_ok());
+    }
+}
+
 /// docling's `_RICH_CELL_PICTURE_COVERAGE_THRESHOLD`.
 const RICH_CELL_PICTURE_COVERAGE: f32 = 0.8;
 
@@ -3436,7 +3672,14 @@ pub fn assemble_page(
         }
         let mut text = region_texts[i].clone();
         text.push_str(&merge_suffix[i]);
-        if text.is_empty() {
+        // A rejected TableFormer prediction may have no flattened region
+        // text while still carrying individually located PDF source words.
+        // Never let the presentation-text guard erase that evidence.
+        let has_table_evidence = is_table_like(region.label)
+            && table_rows[i]
+                .as_ref()
+                .is_some_and(|g| !g.cells.is_empty() || !g.unplaced.is_empty());
+        if text.is_empty() && !has_table_evidence {
             continue;
         }
         match region.label {
@@ -3485,7 +3728,13 @@ pub fn assemble_page(
                     .as_ref()
                     .map(|g| g.unplaced.clone())
                     .unwrap_or_default();
+                // A rejected prediction is an evidence-only result, never an
+                // empty but apparently authoritative table in JSON/Markdown.
+                let rejected_table = table_rows[i]
+                    .as_ref()
+                    .is_some_and(|g| g.rows.is_empty() && g.cells.is_empty());
                 let (mut rows, cells, structure) = match table_rows[i].clone() {
+                    Some(_) if rejected_table => (Vec::new(), None, None),
                     Some(grid) => {
                         let nrows = grid.rows.len();
                         let ncols = grid.rows.first().map_or(0, Vec::len);
@@ -3571,20 +3820,31 @@ pub fn assemble_page(
                     }
                     cell_blocks = Some(blocks);
                 }
-                nodes.push(located(
-                    loc,
-                    Node::Table(Table {
-                        rows,
-                        location: None,
-                        structure,
-                        cell_blocks,
-                        cells,
-                        caption,
-                        // As for pictures: the caption is the table's child.
-                        caption_parent: CaptionParent::Item,
-                        caption_location,
-                    }),
-                ));
+                if rejected_table {
+                    // Preserve an independently observed caption without
+                    // claiming it belongs to a successfully parsed table.
+                    if let Some(caption_text) = caption {
+                        nodes.push(located(
+                            caption_location.unwrap_or(loc),
+                            Node::Paragraph { text: caption_text },
+                        ));
+                    }
+                } else {
+                    nodes.push(located(
+                        loc,
+                        Node::Table(Table {
+                            rows,
+                            location: None,
+                            structure,
+                            cell_blocks,
+                            cells,
+                            caption,
+                            // As for pictures: the caption is the table's child.
+                            caption_parent: CaptionParent::Item,
+                            caption_location,
+                        }),
+                    ));
+                }
                 // Preserve words the source parser read but the predicted
                 // grid cannot place, without inventing TableFormer cells.
                 // The standard invisible content layer keeps these located,
@@ -3618,7 +3878,9 @@ pub fn assemble_page(
                                 children: vec![located(
                                     location,
                                     Node::Paragraph {
-                                        text: md_escape(&word.text),
+                                        // Source evidence is not presentation Markdown.
+                                        // Retain the parser's exact word bytes in JSON.
+                                        text: word.text,
                                     },
                                 )],
                             }

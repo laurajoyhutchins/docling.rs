@@ -308,6 +308,107 @@ pub fn argmax(v: &[f32]) -> usize {
 use crate::pdfium_backend::TextCell;
 use crate::tf_match::{PdfWord, TfCell};
 
+/// Admit TableFormer ownership only after validating the first-class grid.
+/// A contradictory prediction is not a source fact. Retain every in-region
+/// PDF word with its actual source id and box as unplaced evidence, rather than
+/// exporting made-up table associations or falling back to invented geometry.
+fn rejected_table_grid(source_words: &[PdfWord], reason: &str) -> TableGrid {
+    eprintln!("docling-pdf: rejected TableFormer cell ownership: {reason}");
+    TableGrid {
+        rows: Vec::new(),
+        cells: Vec::new(),
+        unplaced: source_words
+            .iter()
+            .map(|word| crate::assemble::UnplacedTableWord {
+                source_cell_id: word.id,
+                text: word.text.clone(),
+                bbox: word.bbox.map(|value| value as f32),
+            })
+            .collect(),
+    }
+}
+
+/// A bounded allocation must precede construction of the dense grid. Reuse
+/// docling-core's existing cell limit instead of creating a PDF-only policy.
+fn grid_within_budget(rows: usize, cols: usize) -> bool {
+    rows > 0
+        && cols > 0
+        && docling_core::limits::TableCellBudget::new()
+            .table("predicted PDF TableFormer grid", rows, cols)
+            .is_ok()
+}
+
+/// Account for *actual* surviving assignments, not intermediate matcher
+/// decisions. Every in-region parser word appears once in either the assigned
+/// IDs or the unplaced evidence, never both. A source-id mismatch invalidates
+/// the prediction rather than silently upgrading it to a table fact.
+fn validate_word_partition(
+    source_words: &[PdfWord],
+    cell_assignments: &[Vec<usize>],
+    cells: &[docling_core::TableCell],
+    unplaced: &[crate::assemble::UnplacedTableWord],
+) -> Result<(), String> {
+    use std::collections::{HashMap, HashSet};
+    if cell_assignments.len() != cells.len() {
+        return Err("table cell assignments disagree with first-class cells".to_string());
+    }
+    let mut sources = HashMap::with_capacity(source_words.len());
+    for word in source_words {
+        if sources.insert(word.id, word).is_some() {
+            return Err(format!("duplicate PDF source word id {}", word.id));
+        }
+    }
+    let mut accounted = HashSet::with_capacity(source_words.len());
+    for (cell_index, (cell, ids)) in cells.iter().zip(cell_assignments).enumerate() {
+        let mut source_text = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(word) = sources.get(id) else {
+                return Err(format!("unknown assigned source word id {id}"));
+            };
+            if !accounted.insert(*id) {
+                return Err(format!("duplicate assigned source word id {id}"));
+            }
+            source_text.push(word.text.as_str());
+        }
+        if normalize_cell_text(source_text.join(" ")) != cell.text {
+            return Err(format!(
+                "cell {cell_index}: text disagrees with assigned PDF source words"
+            ));
+        }
+    }
+    for word in unplaced {
+        let id = word.source_cell_id;
+        let Some(source) = sources.get(&id) else {
+            return Err(format!("unknown unplaced source word id {id}"));
+        };
+        if !accounted.insert(id) {
+            return Err(format!("source word id {id} both assigned and unplaced"));
+        }
+        if word.text != source.text || word.bbox != source.bbox.map(|v| v as f32) {
+            return Err(format!(
+                "unplaced source word id {id} lost original evidence"
+            ));
+        }
+    }
+    if accounted.len() != sources.len() {
+        return Err("table extraction omitted source words".to_string());
+    }
+    Ok(())
+}
+
+fn admit_table_grid(
+    grid: TableGrid,
+    source_words: &[PdfWord],
+    cell_assignments: &[Vec<usize>],
+) -> TableGrid {
+    if let Err(reason) = grid.validate_cell_ownership().and_then(|()| {
+        validate_word_partition(source_words, cell_assignments, &grid.cells, &grid.unplaced)
+    }) {
+        return rejected_table_grid(source_words, &reason);
+    }
+    grid
+}
+
 /// The ONNX-free tail of TableFormer row prediction: match the page's word
 /// cells into the predicted structure `cells` and expand spans into a dense
 /// `rows × cols` text grid. `region` is `(l, t, r, b)` in page points; `cells`
@@ -339,6 +440,15 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         })
         .collect();
 
+    // Do not silently turn an impossible zero-length OTSL span into a
+    // one-slot first-class cell. Preserve the original source words instead.
+    if cells.iter().any(|c| c.rowspan == 0 || c.colspan == 0) {
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted zero-length cell span",
+        ));
+    }
+
     if !table_words.is_empty() && !simple_match() {
         return docling_match_rows(cells, region, &table_words, words);
     }
@@ -360,7 +470,9 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
 
     // Assign each word to the cell it overlaps most (intersection / word area).
     let mut cell_words: Vec<Vec<usize>> = vec![Vec::new(); cells.len()];
-    for (wi, w) in words.iter().enumerate() {
+    let mut assigned = vec![false; table_words.len()];
+    for (wi, source_word) in table_words.iter().enumerate() {
+        let w = &words[source_word.id];
         let wa = ((w.r - w.l) * (w.b - w.t)).max(1.0);
         let mut best: Option<(f32, usize)> = None;
         for (ci, b) in boxes.iter().enumerate() {
@@ -373,23 +485,39 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         }
         if let Some((_, ci)) = best {
             cell_words[ci].push(wi);
+            assigned[wi] = true;
         }
     }
 
-    let num_rows = cells.iter().map(|c| c.row + c.rowspan).max().unwrap_or(0);
-    let num_cols = cells.iter().map(|c| c.col + c.colspan).max().unwrap_or(0);
-    if num_rows == 0 || num_cols == 0 {
-        return None;
+    let dimensions = cells.iter().try_fold((0usize, 0usize), |(rows, cols), c| {
+        Some((
+            rows.max(c.row.checked_add(c.rowspan)?),
+            cols.max(c.col.checked_add(c.colspan)?),
+        ))
+    });
+    let Some((num_rows, num_cols)) = dimensions else {
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted grid span overflow",
+        ));
+    };
+    if !grid_within_budget(num_rows, num_cols) {
+        return Some(rejected_table_grid(
+            &table_words,
+            "predicted grid exceeds cell budget",
+        ));
     }
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
     let mut out_cells = Vec::with_capacity(cells.len());
+    let mut cell_assignments = Vec::with_capacity(cells.len());
     for (ci, c) in cells.iter().enumerate() {
         // Keep words in text-stream order (their word index), matching docling's
         // cell text assembly — geometric re-sorting scrambles wrapped cells.
         let wis = std::mem::take(&mut cell_words[ci]);
+        cell_assignments.push(wis.iter().map(|&i| table_words[i].id).collect());
         let text = wis
             .iter()
-            .map(|&i| words[i].text.trim())
+            .map(|&i| table_words[i].text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
         let text = normalize_cell_text(text);
@@ -401,11 +529,25 @@ pub fn table_rows(cells: &[TableCell], region: [f32; 4], words: &[TextCell]) -> 
         }
         out_cells.push(first_class_cell(text, Some(boxes[ci]), c, c.tag));
     }
-    Some(TableGrid {
-        rows: grid,
-        cells: out_cells,
-        unplaced: Vec::new(),
-    })
+    let unplaced = table_words
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !assigned[*i])
+        .map(|(_, word)| crate::assemble::UnplacedTableWord {
+            source_cell_id: word.id,
+            text: word.text.clone(),
+            bbox: word.bbox.map(|value| value as f32),
+        })
+        .collect();
+    Some(admit_table_grid(
+        TableGrid {
+            rows: grid,
+            cells: out_cells,
+            unplaced,
+        },
+        &table_words,
+        &cell_assignments,
+    ))
 }
 
 /// A public first-class cell (#240) from a predicted OTSL cell: the span
@@ -507,7 +649,7 @@ fn docling_match_rows(
         dump_match_inputs(&dir, &tf_cells, &scaled_words);
     }
 
-    let (cells_wo, final_matches, unplaced) =
+    let (cells_wo, final_matches, _matcher_unplaced) =
         crate::tf_match::match_and_post_process_with_unplaced(tf_cells, &scaled_words);
 
     // `_merge_tf_output`: group per (column, row) in ascending-pdf-id order; the
@@ -556,7 +698,10 @@ fn docling_match_rows(
         }
     }
     if merged.is_empty() {
-        return None;
+        return Some(rejected_table_grid(
+            table_words,
+            "matcher produced no supported table cell",
+        ));
     }
 
     // `multi_table_predict`'s sort_row_col_indexes: compress the surviving
@@ -572,12 +717,43 @@ fn docling_match_rows(
     for m in &mut merged {
         m.start_col = start_cols.binary_search(&m.start_col).expect("own value");
         m.start_row = start_rows.binary_search(&m.start_row).expect("own value");
-        num_cols = num_cols.max(m.start_col + m.col_span);
-        num_rows = num_rows.max(m.start_row + m.row_span);
+        let (Some(col_end), Some(row_end)) = (
+            m.start_col.checked_add(m.col_span),
+            m.start_row.checked_add(m.row_span),
+        ) else {
+            return Some(rejected_table_grid(
+                table_words,
+                "matched grid span overflow",
+            ));
+        };
+        num_cols = num_cols.max(col_end);
+        num_rows = num_rows.max(row_end);
     }
-    if num_rows == 0 || num_cols == 0 {
-        return None;
+    if !grid_within_budget(num_rows, num_cols) {
+        return Some(rejected_table_grid(
+            table_words,
+            "matched grid exceeds cell budget",
+        ));
     }
+    let cell_assignments: Vec<Vec<usize>> =
+        merged.iter().map(|cell| cell.word_ids.clone()).collect();
+    let assigned_ids: Vec<usize> = cell_assignments.iter().flatten().copied().collect();
+    if assigned_ids.iter().any(|&id| id >= words.len()) {
+        return Some(rejected_table_grid(
+            table_words,
+            "matched source id outside page",
+        ));
+    }
+    let assigned_set: std::collections::HashSet<usize> = assigned_ids.iter().copied().collect();
+    let unplaced = table_words
+        .iter()
+        .filter(|word| !assigned_set.contains(&word.id))
+        .map(|word| crate::assemble::UnplacedTableWord {
+            source_cell_id: word.id,
+            text: word.text.clone(),
+            bbox: word.bbox.map(|v| v as f32),
+        })
+        .collect();
 
     let mut grid = vec![vec![String::new(); num_cols]; num_rows];
     let mut out_cells = Vec::with_capacity(merged.len());
@@ -606,23 +782,15 @@ fn docling_match_rows(
             row_section: m.tag == SROW,
         });
     }
-    Some(TableGrid {
-        rows: grid,
-        cells: out_cells,
-        unplaced: unplaced
-            .into_iter()
-            .map(|w| crate::assemble::UnplacedTableWord {
-                source_cell_id: w.id,
-                text: w.text,
-                bbox: [
-                    (w.bbox[0] / SCALE) as f32,
-                    (w.bbox[1] / SCALE) as f32,
-                    (w.bbox[2] / SCALE) as f32,
-                    (w.bbox[3] / SCALE) as f32,
-                ],
-            })
-            .collect(),
-    })
+    Some(admit_table_grid(
+        TableGrid {
+            rows: grid,
+            cells: out_cells,
+            unplaced,
+        },
+        table_words,
+        &cell_assignments,
+    ))
 }
 
 /// Append one JSON line per table into `<dir>/tf_match_dump.jsonl` with the
@@ -692,6 +860,145 @@ fn serde_json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_word_partition_rejects_invented_cell_text_and_lost_words() {
+        let source = vec![
+            PdfWord {
+                id: 7,
+                text: "10 HP".into(),
+                bbox: [0.0, 0.0, 5.0, 5.0],
+            },
+            PdfWord {
+                id: 8,
+                text: "14 A".into(),
+                bbox: [5.0, 0.0, 10.0, 5.0],
+            },
+        ];
+        let mut cell = docling_core::TableCell {
+            text: "10 HP".into(),
+            bbox: Some([0.0, 0.0, 5.0, 5.0]),
+            start_row: 0,
+            start_col: 0,
+            row_span: 1,
+            col_span: 1,
+            column_header: false,
+            row_header: false,
+            row_section: false,
+        };
+        let unplaced = vec![crate::assemble::UnplacedTableWord {
+            source_cell_id: 8,
+            text: "14 A".into(),
+            bbox: [5.0, 0.0, 10.0, 5.0],
+        }];
+        let assignments = vec![vec![7]];
+        assert!(validate_word_partition(&source, &assignments, &[cell.clone()], &unplaced).is_ok());
+
+        cell.text = "20 HP".into();
+        assert!(
+            validate_word_partition(&source, &assignments, &[cell.clone()], &unplaced)
+                .unwrap_err()
+                .contains("text disagrees")
+        );
+        cell.text = "10 HP".into();
+        assert!(
+            validate_word_partition(&source, &[vec![7, 7]], &[cell.clone()], &unplaced).is_err()
+        );
+        assert!(validate_word_partition(&source, &[vec![9]], &[cell.clone()], &unplaced).is_err());
+        assert!(
+            validate_word_partition(&source, &[vec![7, 8]], &[cell.clone()], &unplaced).is_err()
+        );
+        assert!(validate_word_partition(&source, &assignments, &[cell.clone()], &[]).is_err());
+        assert!(validate_word_partition(&source, &[], &[cell.clone()], &unplaced).is_err());
+
+        let mut changed = unplaced.clone();
+        changed[0].text = "15 A".into();
+        assert!(validate_word_partition(&source, &assignments, &[cell.clone()], &changed).is_err());
+        changed[0].text = "14 A".into();
+        changed[0].bbox[2] = 20.0;
+        assert!(validate_word_partition(&source, &assignments, &[cell], &changed).is_err());
+    }
+
+    #[test]
+    fn invalid_zero_length_prediction_is_not_promoted_to_a_real_cell() {
+        let prediction = TableCell {
+            row: 0,
+            col: 0,
+            colspan: 0,
+            rowspan: 1,
+            tag: FCEL,
+            class: 2,
+            cx: 0.5,
+            cy: 0.5,
+            w: 1.0,
+            h: 1.0,
+        };
+        let grid = table_rows(&[prediction], [0.0, 0.0, 100.0, 100.0], &[])
+            .expect("invalid prediction must produce a rejected grid");
+        assert!(grid.cells.is_empty());
+        assert!(grid.rows.is_empty());
+    }
+
+    #[test]
+    fn huge_predicted_dimensions_are_rejected_before_allocation() {
+        assert!(grid_within_budget(2, 3));
+        assert!(!grid_within_budget(usize::MAX, usize::MAX));
+        assert!(!grid_within_budget(1, 0));
+    }
+
+    #[test]
+    fn invalid_tableformer_prediction_retains_source_words_without_ownership() {
+        let input = TableGrid {
+            rows: vec![vec!["first".into(), "second".into()]],
+            cells: vec![
+                docling_core::TableCell {
+                    text: "first".into(),
+                    bbox: None,
+                    start_row: 0,
+                    start_col: 0,
+                    row_span: 1,
+                    col_span: 2,
+                    column_header: false,
+                    row_header: false,
+                    row_section: false,
+                },
+                docling_core::TableCell {
+                    text: "second".into(),
+                    bbox: None,
+                    start_row: 0,
+                    start_col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    column_header: false,
+                    row_header: false,
+                    row_section: false,
+                },
+            ],
+            unplaced: Vec::new(),
+        };
+        let source = vec![
+            PdfWord {
+                id: 31,
+                text: "first".into(),
+                bbox: [0.0, 0.0, 10.0, 10.0],
+            },
+            PdfWord {
+                id: 47,
+                text: "second".into(),
+                bbox: [10.0, 0.0, 20.0, 10.0],
+            },
+        ];
+        let admitted = admit_table_grid(input, &source, &[vec![31], vec![47]]);
+        assert!(
+            admitted.cells.is_empty(),
+            "do not invent source cell ownership"
+        );
+        assert!(admitted.rows.is_empty(), "do not present an inferred table");
+        assert_eq!(admitted.unplaced.len(), 2);
+        assert_eq!(admitted.unplaced[0].source_cell_id, 31);
+        assert_eq!(admitted.unplaced[1].source_cell_id, 47);
+        assert_eq!(admitted.unplaced[1].bbox, [10.0, 0.0, 20.0, 10.0]);
+    }
 
     #[test]
     fn corrections() {
